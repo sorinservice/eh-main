@@ -1,430 +1,351 @@
--- Preview = https://gyazo.com/ba33c85b4bfeb92963d0a5ec3ac8f27d
---// Made by Blissful#4992
---// Locals:
-local workspace = game:GetService("Workspace")
-local player = game:GetService("Players").LocalPlayer
-local camera = workspace.CurrentCamera
+-- tabs/visuals.lua
+-- Visuals / ESP für SorinHub – modular, performant, mit UI-Steuerung (Orion)
 
---// Settings:
-local on = true -- Use this if your making gui
+return function(tab, OrionLib)
+    -- ==== Services / Locals ====
+    local Players     = game:GetService("Players")
+    local RunService  = game:GetService("RunService")
+    local Workspace   = game:GetService("Workspace")
 
-local Box_Color = Color3.fromRGB(255, 0, 0)
-local Box_Thickness = 2
-local Box_Transparency = 1 -- 1 Visible, 0 Not Visible
+    local LocalPlayer = Players.LocalPlayer
+    local Camera      = Workspace.CurrentCamera
 
-local Tracers = true
-local Tracer_Color = Color3.fromRGB(255, 0, 0)
-local Tracer_Thickness = 2
-local Tracer_Transparency = 1 -- 1 Visible, 0 Not Visible
+    -- ==== State (wird über UI geändert) ====
+    local STATE = {
+        enabled         = false,
+        tracers         = true,
+        teamCheck       = true,
+        autoThickness   = true,
+        shifter         = true,
 
-local Shifter_Color = Color3.fromRGB(0, 255, 0)
+        boxColor        = Color3.fromRGB(255, 0, 0),
+        tracerColor     = Color3.fromRGB(255, 0, 0),
+        allyColor       = Color3.fromRGB(90, 215, 25),
+        enemyColor      = Color3.fromRGB(240, 20, 20),
 
-local Autothickness = true -- Makes screen less encumbered
-
-local Team_Check = true
-local red = Color3.fromRGB(240, 20, 20)
-local green = Color3.fromRGB(90, 215, 25)
-
-local function Lerp(a, b, t)
-    return a + (b - a) * t
-end
-
-local function NewLine()
-    local line = Drawing.new("Line")
-    line.Visible = false
-    line.From = Vector2.new(0, 0)
-    line.To = Vector2.new(1, 1)
-    line.Color = Box_Color
-    line.Thickness = Box_Thickness
-    line.Transparency = Box_Transparency
-    return line
-end
-
---// Main Function:
-for i, v in pairs(game.Players:GetChildren()) do
-    --// Lines for 3D box (12)
-    local lines = {
-        line1 = NewLine(),
-        line2 = NewLine(),
-        line3 = NewLine(),
-        line4 = NewLine(),
-        line5 = NewLine(),
-        line6 = NewLine(),
-        line7 = NewLine(),
-        line8 = NewLine(),
-        line9 = NewLine(),
-        line10 = NewLine(),
-        line11 = NewLine(),
-        line12 = NewLine(),
-        Tracer = NewLine()
+        baseThickness   = 2,
+        boxTransparency = 1,
+        tracerTransparency = 1,
     }
 
-    lines.Tracer.Color = Tracer_Color
-    lines.Tracer.Thickness = Tracer_Thickness
-    lines.Tracer.Transparency = Tracer_Transparency
+    -- ==== Kompatibilität prüfen (Drawing API) ====
+    local canDraw = (Drawing ~= nil) and pcall(function() local _ = Drawing.new("Line"); _.Visible=false; _.Remove() end)
+    if not canDraw then
+        tab:AddParagraph("Hinweis", "Dein Executor bietet keine Drawing API.\nDas Visuals-Tab wird deaktiviert.")
+        return
+    end
 
-    local Shifter = Drawing.new("Quad")
-    Shifter.Visible = false
-    Shifter.Color = Shifter_Color
-    Shifter.Thickness = Box_Thickness
-    Shifter.Filled = false
-    Shifter.Transparency = Box_Transparency
+    -- ==== Drawing-Objekt Helfer ====
+    local function NewLine(col, thick, transp)
+        local line = Drawing.new("Line")
+        line.Visible       = false
+        line.Color         = col or STATE.boxColor
+        line.Thickness     = thick or STATE.baseThickness
+        line.Transparency  = transp or STATE.boxTransparency
+        return line
+    end
 
-    local debounce = 0
-    local shifteroffset = 0
+    local function NewQuad(col, thick, transp)
+        local q = Drawing.new("Quad")
+        q.Visible       = false
+        q.Filled        = false
+        q.Color         = col or STATE.boxColor
+        q.Thickness     = thick or STATE.baseThickness
+        q.Transparency  = transp or STATE.boxTransparency
+        return q
+    end
 
-    --// Updates ESP (lines) in render loop
-    local function ESP()
-        local connection
-        connection = game:GetService("RunService").RenderStepped:Connect(function()
-            if on and v.Character ~= nil and v.Character:FindFirstChild("Humanoid") ~= nil and v.Character:FindFirstChild("HumanoidRootPart") ~= nil and v.Name ~= player.Name and v.Character.Humanoid.Health > 0 and v.Character:FindFirstChild("Head") ~= nil then
-                local pos, vis = camera:WorldToViewportPoint(v.Character.HumanoidRootPart.Position)
-                if vis then
-                    local Scale = v.Character.Head.Size.Y/2
-                    local Size = Vector3.new(2, 3, 1.5) * (Scale * 2) -- Change this for different box size
+    -- pro Spieler: 12 Linien für 3D-Box + 1 Tracer + 1 Shifter-Quad
+    local pool = {}  -- [player] = {lines={...}, tracer=Line, shifter=Quad}
 
-                    local Top1 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, Size.Y, -Size.Z)).p)
-                    local Top2 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, Size.Y, Size.Z)).p)
-                    local Top3 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, Size.Y, Size.Z)).p)
-                    local Top4 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, Size.Y, -Size.Z)).p)
+    local function allocFor(plr)
+        if pool[plr] then return pool[plr] end
+        local lines = {
+            NewLine(), NewLine(), NewLine(), NewLine(), -- top 1..4
+            NewLine(), NewLine(), NewLine(), NewLine(), -- bottom 5..8
+            NewLine(), NewLine(), NewLine(), NewLine(), -- sides 9..12
+        }
+        local tracer  = NewLine(STATE.tracerColor, STATE.baseThickness, STATE.tracerTransparency)
+        local shifter = NewQuad(STATE.enemyColor, STATE.baseThickness, STATE.boxTransparency)
 
-                    local Bottom1 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, -Size.Y, -Size.Z)).p)
-                    local Bottom2 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, -Size.Y, Size.Z)).p)
-                    local Bottom3 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, -Size.Y, Size.Z)).p)
-                    local Bottom4 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, -Size.Y, -Size.Z)).p)
+        pool[plr] = { lines = lines, tracer = tracer, shifter = shifter, shifterOffset = 0, debounce = 0 }
+        return pool[plr]
+    end
 
-                    --// Top:
-                    lines.line1.From = Vector2.new(Top1.X, Top1.Y)
-                    lines.line1.To = Vector2.new(Top2.X, Top2.Y)
+    local function freeFor(plr)
+        local slot = pool[plr]
+        if not slot then return end
+        for _,ln in ipairs(slot.lines) do pcall(function() ln:Remove() end) end
+        if slot.tracer  then pcall(function() slot.tracer:Remove() end) end
+        if slot.shifter then pcall(function() slot.shifter:Remove() end) end
+        pool[plr] = nil
+    end
 
-                    lines.line2.From = Vector2.new(Top2.X, Top2.Y)
-                    lines.line2.To = Vector2.new(Top3.X, Top3.Y)
+    local function hideAllFor(plr)
+        local slot = pool[plr]
+        if not slot then return end
+        for _,ln in ipairs(slot.lines) do ln.Visible = false end
+        if slot.tracer  then slot.tracer.Visible  = false end
+        if slot.shifter then slot.shifter.Visible = false end
+    end
 
-                    lines.line3.From = Vector2.new(Top3.X, Top3.Y)
-                    lines.line3.To = Vector2.new(Top4.X, Top4.Y)
+    -- ==== Mathe / Utils ====
+    local function lerp(a,b,t) return a + (b-a)*t end
 
-                    lines.line4.From = Vector2.new(Top4.X, Top4.Y)
-                    lines.line4.To = Vector2.new(Top1.X, Top1.Y)
+    local function setLine(l, from, to)
+        l.From = from
+        l.To   = to
+        l.Visible = true
+    end
 
-                    --// Bottom:
-                    lines.line5.From = Vector2.new(Bottom1.X, Bottom1.Y)
-                    lines.line5.To = Vector2.new(Bottom2.X, Bottom2.Y)
+    local function setThickness(slot, value)
+        for _,ln in ipairs(slot.lines) do ln.Thickness = value end
+        slot.tracer.Thickness  = value
+        slot.shifter.Thickness = value
+    end
 
-                    lines.line6.From = Vector2.new(Bottom2.X, Bottom2.Y)
-                    lines.line6.To = Vector2.new(Bottom3.X, Bottom3.Y)
+    local function setTeamColors(slot, isAlly)
+        local col = isAlly and STATE.allyColor or STATE.enemyColor
+        for _,ln in ipairs(slot.lines) do ln.Color = col end
+        slot.shifter.Color = (isAlly and STATE.enemyColor or STATE.allyColor) -- Kontrast
+    end
 
-                    lines.line7.From = Vector2.new(Bottom3.X, Bottom3.Y)
-                    lines.line7.To = Vector2.new(Bottom4.X, Bottom4.Y)
+    local function applyBaseColors(slot)
+        for _,ln in ipairs(slot.lines) do ln.Color = STATE.boxColor end
+        slot.tracer.Color = STATE.tracerColor
+        slot.shifter.Color = STATE.boxColor
+    end
 
-                    lines.line8.From = Vector2.new(Bottom4.X, Bottom4.Y)
-                    lines.line8.To = Vector2.new(Bottom1.X, Bottom1.Y)
+    -- ==== Hauptrender ====
+    local rsConn -- RenderStepped connection
 
-                    --//S ides:
-                    lines.line9.From = Vector2.new(Bottom1.X, Bottom1.Y)
-                    lines.line9.To = Vector2.new(Top1.X, Top1.Y)
+    local function startRender()
+        if rsConn then return end
+        rsConn = RunService.RenderStepped:Connect(function()
+            if not STATE.enabled then
+                -- ausgeknipst -> alles verstecken
+                for plr,_ in pairs(pool) do hideAllFor(plr) end
+                return
+            end
 
-                    lines.line10.From = Vector2.new(Bottom2.X, Bottom2.Y)
-                    lines.line10.To = Vector2.new(Top2.X, Top2.Y)
+            local lpChar = LocalPlayer.Character
+            local lpHRP  = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
 
-                    lines.line11.From = Vector2.new(Bottom3.X, Bottom3.Y)
-                    lines.line11.To = Vector2.new(Top3.X, Top3.Y)
+            for _,plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer then
+                    local slot = allocFor(plr)
+                    local char = plr.Character
+                    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+                    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+                    local head = char and char:FindFirstChild("Head")
 
-                    lines.line12.From = Vector2.new(Bottom4.X, Bottom4.Y)
-                    lines.line12.To = Vector2.new(Top4.X, Top4.Y)
+                    if hum and hrp and head and hum.Health > 0 then
+                        local _, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+                        if onScreen then
+                            -- Box-Größe relativ zum Kopf
+                            local scale = head.Size.Y/2
+                            local size3 = Vector3.new(2, 3, 1.5) * (scale * 2)
 
-                    --// Tracer:
-                    if Tracers then
-                        local trace = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(0, -Size.Y, 0)).p)
+                            -- 8 Eckpunkte (Top & Bottom)
+                            local top1 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(-size3.X,  size3.Y, -size3.Z)).Position)
+                            local top2 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(-size3.X,  size3.Y,  size3.Z)).Position)
+                            local top3 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new( size3.X,  size3.Y,  size3.Z)).Position)
+                            local top4 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new( size3.X,  size3.Y, -size3.Z)).Position)
 
-                        lines.Tracer.From = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                        lines.Tracer.To = Vector2.new(trace.X, trace.Y)
-                    end
+                            local bot1 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(-size3.X, -size3.Y, -size3.Z)).Position)
+                            local bot2 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(-size3.X, -size3.Y,  size3.Z)).Position)
+                            local bot3 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new( size3.X, -size3.Y,  size3.Z)).Position)
+                            local bot4 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new( size3.X, -size3.Y, -size3.Z)).Position)
 
-                    --// Teamcheck:
-                    if Team_Check then
-                        if v.TeamColor == player.TeamColor then
-                            for u, x in pairs(lines) do
-                                x.Color = green
+                            -- Team-Farbe oder feste Farben?
+                            if STATE.teamCheck and plr.Team and LocalPlayer.Team then
+                                setTeamColors(slot, plr.Team == LocalPlayer.Team)
+                            else
+                                applyBaseColors(slot)
                             end
-                            Shifter.Color = red
-                        else 
-                            for u, x in pairs(lines) do
-                                x.Color = red
+
+                            -- AutoThickness
+                            if STATE.autoThickness and lpHRP then
+                                local dist = (lpHRP.Position - hrp.Position).Magnitude
+                                local thick = math.clamp(1 / math.max(dist, 1) * 100, 0.1, 4)
+                                setThickness(slot, thick)
+                            else
+                                setThickness(slot, STATE.baseThickness)
                             end
-                            Shifter.Color = green
+
+                            -- Top (1..4)
+                            setLine(slot.lines[1],  Vector2.new(top1.X, top1.Y), Vector2.new(top2.X, top2.Y))
+                            setLine(slot.lines[2],  Vector2.new(top2.X, top2.Y), Vector2.new(top3.X, top3.Y))
+                            setLine(slot.lines[3],  Vector2.new(top3.X, top3.Y), Vector2.new(top4.X, top4.Y))
+                            setLine(slot.lines[4],  Vector2.new(top4.X, top4.Y), Vector2.new(top1.X, top1.Y))
+                            -- Bottom (5..8)
+                            setLine(slot.lines[5],  Vector2.new(bot1.X, bot1.Y), Vector2.new(bot2.X, bot2.Y))
+                            setLine(slot.lines[6],  Vector2.new(bot2.X, bot2.Y), Vector2.new(bot3.X, bot3.Y))
+                            setLine(slot.lines[7],  Vector2.new(bot3.X, bot3.Y), Vector2.new(bot4.X, bot4.Y))
+                            setLine(slot.lines[8],  Vector2.new(bot4.X, bot4.Y), Vector2.new(bot1.X, bot1.Y))
+                            -- Sides (9..12)
+                            setLine(slot.lines[9],  Vector2.new(bot1.X, bot1.Y), Vector2.new(top1.X, top1.Y))
+                            setLine(slot.lines[10], Vector2.new(bot2.X, bot2.Y), Vector2.new(top2.X, top2.Y))
+                            setLine(slot.lines[11], Vector2.new(bot3.X, bot3.Y), Vector2.new(top3.X, top3.Y))
+                            setLine(slot.lines[12], Vector2.new(bot4.X, bot4.Y), Vector2.new(top4.X, top4.Y))
+
+                            -- Tracer
+                            if STATE.tracers then
+                                local foot = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(0, -size3.Y, 0)).Position)
+                                slot.tracer.Color        = STATE.teamCheck and slot.lines[1].Color or STATE.tracerColor
+                                slot.tracer.Transparency = STATE.tracerTransparency
+                                slot.tracer.From         = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+                                slot.tracer.To           = Vector2.new(foot.X, foot.Y)
+                                slot.tracer.Visible      = true
+                            else
+                                slot.tracer.Visible = false
+                            end
+
+                            -- Shifter (animiertes Quad in Körperhöhe)
+                            if STATE.shifter then
+                                -- einfacher Ping-Pong
+                                slot.debounce = slot.debounce or 0
+                                slot.shifterOffset = lerp(slot.shifterOffset or 0, math.sin(os.clock()*2) * size3.Y, 0.25)
+
+                                local sY = slot.shifterOffset
+                                local s1 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(-size3.X, sY, -size3.Z)).Position)
+                                local s2 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new(-size3.X, sY,  size3.Z)).Position)
+                                local s3 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new( size3.X, sY,  size3.Z)).Position)
+                                local s4 = Camera:WorldToViewportPoint((hrp.CFrame * CFrame.new( size3.X, sY, -size3.Z)).Position)
+
+                                slot.shifter.PointA = Vector2.new(s1.X, s1.Y)
+                                slot.shifter.PointB = Vector2.new(s2.X, s2.Y)
+                                slot.shifter.PointC = Vector2.new(s3.X, s3.Y)
+                                slot.shifter.PointD = Vector2.new(s4.X, s4.Y)
+                                slot.shifter.Visible = true
+                            else
+                                slot.shifter.Visible = false
+                            end
+                        else
+                            hideAllFor(plr)
                         end
+                    else
+                        hideAllFor(plr)
                     end
-
-                    --// Shifter:
-                    if debounce == 0 then
-                        debounce = debounce + 1
-                        spawn(function()
-                            for i = 0, Size.Y, 0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-                            
-                            for i = shifteroffset, 0, -0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-
-                            for i = 0, -Size.Y, -0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-
-                            for i = shifteroffset, 0, 0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-                            debounce = 0
-                        end)
-                    end
-
-                    local shifter1 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, shifteroffset, -Size.Z)).p)
-                    local shifter2 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, shifteroffset, Size.Z)).p)
-                    local shifter3 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, shifteroffset, Size.Z)).p)
-                    local shifter4 = camera:WorldToViewportPoint((v.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, shifteroffset, -Size.Z)).p)
-
-                    Shifter.PointA = Vector2.new(shifter1.X, shifter1.Y)
-                    Shifter.PointB = Vector2.new(shifter2.X, shifter2.Y)
-                    Shifter.PointC = Vector2.new(shifter3.X, shifter3.Y)
-                    Shifter.PointD = Vector2.new(shifter4.X, shifter4.Y)
-
-                    --// Autothickness:
-                    if Autothickness then
-                        local distance = (player.Character.HumanoidRootPart.Position - v.Character.HumanoidRootPart.Position).magnitude
-                        local value = math.clamp(1/distance*100, 0.1, 4) --0.1 is min thickness, 6 is max
-                        for u, x in pairs(lines) do
-                            x.Thickness = value
-                        end
-                        Shifter.Thickness = value
-                    else 
-                        for u, x in pairs(lines) do
-                            x.Thickness = Box_Thickness
-                        end
-                        Shifter.Thickness = Box_Thickness
-                    end
-
-                    for u, x in pairs(lines) do
-                        if x ~= lines.Tracer then
-                            x.Visible = true
-                        end
-                    end
-                    if Tracers then
-                        lines.Tracer.Visible = true
-                    end
-                    Shifter.Visible = true
-                else 
-                    for u, x in pairs(lines) do
-                        x.Visible = false
-                    end
-                    Shifter.Visible = false
                 end
-            else 
-                for u, x in pairs(lines) do
-                    x.Visible = false
-                end
-                Shifter.Visible = false
-                if game.Players:FindFirstChild(v.Name) == nil then
-                    connection:Disconnect()
+            end
+
+            -- Aufräumen für Spieler, die nicht mehr existieren
+            for plr,_ in pairs(pool) do
+                if not Players:FindFirstChild(plr.Name) then
+                    freeFor(plr)
                 end
             end
         end)
     end
-    coroutine.wrap(ESP)()
-end
 
-game.Players.PlayerAdded:Connect(function(newplr)
-    --// Lines for 3D box (12)
-    local lines = {
-        line1 = NewLine(),
-        line2 = NewLine(),
-        line3 = NewLine(),
-        line4 = NewLine(),
-        line5 = NewLine(),
-        line6 = NewLine(),
-        line7 = NewLine(),
-        line8 = NewLine(),
-        line9 = NewLine(),
-        line10 = NewLine(),
-        line11 = NewLine(),
-        line12 = NewLine(),
-        Tracer = NewLine()
-    }
-
-    lines.Tracer.Color = Tracer_Color
-    lines.Tracer.Thickness = Tracer_Thickness
-    lines.Tracer.Transparency = Tracer_Transparency
-
-    local Shifter = Drawing.new("Quad")
-    Shifter.Visible = false
-    Shifter.Color = Shifter_Color
-    Shifter.Thickness = Box_Thickness
-    Shifter.Filled = false
-    Shifter.Transparency = Box_Transparency
-
-    local debounce = 0
-    local shifteroffset = 0
-
-    --// Updates ESP (lines) in render loop
-    local function ESP()
-        local connection
-        connection = game:GetService("RunService").RenderStepped:Connect(function()
-            if on and newplr.Character ~= nil and newplr.Character:FindFirstChild("Humanoid") ~= nil and newplr.Character:FindFirstChild("HumanoidRootPart") ~= nil and newplr.Name ~= player.Name and newplr.Character.Humanoid.Health > 0 and newplr.Character:FindFirstChild("Head") ~= nil then
-                local pos, vis = camera:WorldToViewportPoint(newplr.Character.HumanoidRootPart.Position)
-                if vis then
-                    local Scale = newplr.Character.Head.Size.Y/2
-                    local Size = Vector3.new(2, 3, 1.5) * (Scale * 2) -- Change this for different box size
-
-                    local Top1 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, Size.Y, -Size.Z)).p)
-                    local Top2 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, Size.Y, Size.Z)).p)
-                    local Top3 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, Size.Y, Size.Z)).p)
-                    local Top4 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, Size.Y, -Size.Z)).p)
-
-                    local Bottom1 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, -Size.Y, -Size.Z)).p)
-                    local Bottom2 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, -Size.Y, Size.Z)).p)
-                    local Bottom3 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, -Size.Y, Size.Z)).p)
-                    local Bottom4 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, -Size.Y, -Size.Z)).p)
-
-                    --// Top:
-                    lines.line1.From = Vector2.new(Top1.X, Top1.Y)
-                    lines.line1.To = Vector2.new(Top2.X, Top2.Y)
-
-                    lines.line2.From = Vector2.new(Top2.X, Top2.Y)
-                    lines.line2.To = Vector2.new(Top3.X, Top3.Y)
-
-                    lines.line3.From = Vector2.new(Top3.X, Top3.Y)
-                    lines.line3.To = Vector2.new(Top4.X, Top4.Y)
-
-                    lines.line4.From = Vector2.new(Top4.X, Top4.Y)
-                    lines.line4.To = Vector2.new(Top1.X, Top1.Y)
-
-                    --// Bottom:
-                    lines.line5.From = Vector2.new(Bottom1.X, Bottom1.Y)
-                    lines.line5.To = Vector2.new(Bottom2.X, Bottom2.Y)
-
-                    lines.line6.From = Vector2.new(Bottom2.X, Bottom2.Y)
-                    lines.line6.To = Vector2.new(Bottom3.X, Bottom3.Y)
-
-                    lines.line7.From = Vector2.new(Bottom3.X, Bottom3.Y)
-                    lines.line7.To = Vector2.new(Bottom4.X, Bottom4.Y)
-
-                    lines.line8.From = Vector2.new(Bottom4.X, Bottom4.Y)
-                    lines.line8.To = Vector2.new(Bottom1.X, Bottom1.Y)
-
-                    --//Sides:
-                    lines.line9.From = Vector2.new(Bottom1.X, Bottom1.Y)
-                    lines.line9.To = Vector2.new(Top1.X, Top1.Y)
-
-                    lines.line10.From = Vector2.new(Bottom2.X, Bottom2.Y)
-                    lines.line10.To = Vector2.new(Top2.X, Top2.Y)
-
-                    lines.line11.From = Vector2.new(Bottom3.X, Bottom3.Y)
-                    lines.line11.To = Vector2.new(Top3.X, Top3.Y)
-
-                    lines.line12.From = Vector2.new(Bottom4.X, Bottom4.Y)
-                    lines.line12.To = Vector2.new(Top4.X, Top4.Y)
-
-                    --// Tracer:
-                    if Tracers then
-                        local trace = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(0, -Size.Y, 0)).p)
-                        lines.Tracer.From = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                        lines.Tracer.To = Vector2.new(trace.X, trace.Y)
-                    end
-
-                    --// Teamcheck:
-                    if Team_Check then
-                        if newplr.TeamColor == player.TeamColor then
-                            for u, x in pairs(lines) do
-                                x.Color = green
-                            end
-                            Shifter.Color = red
-                        else 
-                            for u, x in pairs(lines) do
-                                x.Color = red
-                            end
-                            Shifter.Color = green
-                        end
-                    end
-
-                    --// Shifter:
-                    if debounce == 0 then
-                        debounce = debounce + 1
-                        spawn(function()
-                            for i = 0, Size.Y, 0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-                            
-                            for i = shifteroffset, 0, -0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-
-                            for i = 0, -Size.Y, -0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-
-                            for i = shifteroffset, 0, 0.1 do
-                                shifteroffset = Lerp(shifteroffset, i, 0.5)
-                                wait()
-                            end
-                            debounce = 0
-                        end)
-                    end
-
-                    local shifter1 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, shifteroffset, -Size.Z)).p)
-                    local shifter2 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(-Size.X, shifteroffset, Size.Z)).p)
-                    local shifter3 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, shifteroffset, Size.Z)).p)
-                    local shifter4 = camera:WorldToViewportPoint((newplr.Character.HumanoidRootPart.CFrame * CFrame.new(Size.X, shifteroffset, -Size.Z)).p)
-
-                    Shifter.PointA = Vector2.new(shifter1.X, shifter1.Y)
-                    Shifter.PointB = Vector2.new(shifter2.X, shifter2.Y)
-                    Shifter.PointC = Vector2.new(shifter3.X, shifter3.Y)
-                    Shifter.PointD = Vector2.new(shifter4.X, shifter4.Y)
-
-                    --// Autothickness:
-                    if Autothickness then
-                        local distance = (player.Character.HumanoidRootPart.Position - newplr.Character.HumanoidRootPart.Position).magnitude
-                        local value = math.clamp(1/distance*100, 0.1, 4) --0.1 is min thickness, 6 is max
-                        for u, x in pairs(lines) do
-                            x.Thickness = value
-                        end
-                        Shifter.Thickness = value
-                    else 
-                        for u, x in pairs(lines) do
-                            x.Thickness = Box_Thickness
-                        end
-                        Shifter.Thickness = Box_Thickness
-                    end
-
-                    for u, x in pairs(lines) do
-                        if x ~= lines.Tracer then
-                            x.Visible = true
-                        end
-                    end
-                    if Tracers then
-                        lines.Tracer.Visible = true
-                    end
-                    Shifter.Visible = true
-                else 
-                    for u, x in pairs(lines) do
-                        x.Visible = false
-                    end
-                    Shifter.Visible = false
-                end
-            else 
-                for u, x in pairs(lines) do
-                    x.Visible = false
-                end
-                if game.Players:FindFirstChild(newplr.Name) == nil then
-                    connection:Disconnect()
-                end
-            end
-        end)
+    local function stopRender()
+        if rsConn then rsConn:Disconnect() rsConn = nil end
+        for plr,_ in pairs(pool) do hideAllFor(plr) end
     end
-    coroutine.wrap(ESP)()
-end)
+
+    -- ==== Player Join/Leave: nur Pool verwalten ====
+    local addConn = Players.PlayerAdded:Connect(function(plr) allocFor(plr) end)
+    local remConn = Players.PlayerRemoving:Connect(function(plr) freeFor(plr) end)
+    for _,plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then allocFor(plr) end end
+
+    -- ==== UI (Orion) ====
+    tab:AddSection({ Name = "ESP – Grundfunktionen" })
+
+    tab:AddToggle({
+        Name = "ESP aktivieren",
+        Default = false,
+        Callback = function(v)
+            STATE.enabled = v
+            if v then startRender() else stopRender() end
+        end
+    })
+
+    tab:AddToggle({
+        Name = "Tracer",
+        Default = STATE.tracers,
+        Callback = function(v) STATE.tracers = v end
+    })
+
+    tab:AddToggle({
+        Name = "Team-Check",
+        Default = STATE.teamCheck,
+        Callback = function(v) STATE.teamCheck = v end
+    })
+
+    tab:AddToggle({
+        Name = "Auto-Thickness",
+        Default = STATE.autoThickness,
+        Callback = function(v) STATE.autoThickness = v end
+    })
+
+    tab:AddToggle({
+        Name = "Shifter-Effekt",
+        Default = STATE.shifter,
+        Callback = function(v) STATE.shifter = v end
+    })
+
+    tab:AddSlider({
+        Name = "Grund-Linienstärke",
+        Min = 1, Max = 6, Increment = 1, Default = STATE.baseThickness,
+        Callback = function(val)
+            STATE.baseThickness = val
+            for _,slot in pairs(pool) do setThickness(slot, val) end
+        end
+    })
+
+    tab:AddSection({ Name = "Farben" })
+
+    tab:AddColorpicker({
+        Name = "Box-Farbe",
+        Default = STATE.boxColor,
+        Callback = function(c)
+            STATE.boxColor = c
+            for _,slot in pairs(pool) do
+                for _,ln in ipairs(slot.lines) do ln.Color = c end
+                if not STATE.teamCheck then slot.shifter.Color = c end
+            end
+        end
+    })
+
+    tab:AddColorpicker({
+        Name = "Tracer-Farbe",
+        Default = STATE.tracerColor,
+        Callback = function(c)
+            STATE.tracerColor = c
+        end
+    })
+
+    tab:AddColorpicker({
+        Name = "Ally-Farbe",
+        Default = STATE.allyColor,
+        Callback = function(c) STATE.allyColor = c end
+    })
+
+    tab:AddColorpicker({
+        Name = "Enemy-Farbe",
+        Default = STATE.enemyColor,
+        Callback = function(c) STATE.enemyColor = c end
+    })
+
+    -- ==== Cleanup falls Tab/Script geschlossen wird ====
+    -- (Orion ruft kein Destroy-Hook pro Tab; wir sichern zumindest Render + Drawings)
+    local function cleanupAll()
+        stopRender()
+        addConn:Disconnect()
+        remConn:Disconnect()
+        for plr,_ in pairs(pool) do freeFor(plr) end
+    end
+
+    -- Optional: Schaltfläche zum harten Reset
+    tab:AddButton({
+        Name = "Visuals zurücksetzen",
+        Callback = function()
+            cleanupAll()
+            -- Pool neu anlegen
+            for _,plr in ipairs(Players:GetPlayers()) do if plr ~= LocalPlayer then allocFor(plr) end end
+            if STATE.enabled then startRender() end
+            OrionLib:MakeNotification({ Name="Reset", Content="Visuals neu initialisiert.", Time=3 })
+        end
+    })
+end
