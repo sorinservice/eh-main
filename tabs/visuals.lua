@@ -1,5 +1,7 @@
 -- tabs/visuals.lua
--- Visuals / ESP for SorinHub – modular, performant, Orion UI
+-- Visuals / ESP for SorinHub (Orion UI)
+-- Features per-player: DisplayName, @Username, Distance (studs), Equipped item, Skeleton
+-- Every setting is an individual toggle. All defaults are OFF. Orion Flags persist.
 
 return function(tab, OrionLib)
 
@@ -13,7 +15,37 @@ return function(tab, OrionLib)
     local Camera      = Workspace.CurrentCamera
 
     ----------------------------------------------------------------
-    -- State (controlled by UI)
+    -- Early guard: Drawing API
+    if not Drawing then
+        tab:AddParagraph("Notice", "Your executor does not expose the Drawing API. Visuals are disabled.")
+        return
+    end
+
+    ----------------------------------------------------------------
+    -- Mapping loader (per PlaceId). Fallback to _default.lua (disabled Equipped).
+    local BASE_MAP_URL = "https://raw.githubusercontent.com/sorinservice/eh-main/main/mappings/"
+    local DEFAULT_MAP  = "_default.lua"
+
+    local function httpLoad(url) return game:HttpGet(url) end
+    local function loadMappingFor(placeId)
+        local ok, src = pcall(httpLoad, BASE_MAP_URL .. tostring(placeId) .. ".lua")
+        if ok and type(src)=="string" and #src>0 then
+            local f = loadstring(src)
+            local ok2, t = pcall(f)
+            if ok2 and type(t)=="table" then t.__isDefault=false; return t end
+        end
+        local okD, srcD = pcall(httpLoad, BASE_MAP_URL .. DEFAULT_MAP)
+        if okD and type(srcD)=="string" and #srcD>0 then
+            local fD = loadstring(srcD)
+            local ok2, tD = pcall(fD)
+            if ok2 and type(tD)=="table" then tD.__isDefault=true; return tD end
+        end
+        return { byId = {}, byName = {}, defaultUnknown = "Unknown Item", __isDefault = true }
+    end
+    local Mapping = loadMappingFor(game.PlaceId)
+
+    ----------------------------------------------------------------
+    -- UI State (Orion Flags will persist these)
     local STATE = {
         enabled       = false,
         showName      = false,
@@ -22,145 +54,85 @@ return function(tab, OrionLib)
         showEquipped  = false,
         showBones     = false,
         showSelf      = false,
-        maxDistance   = 750,  -- studs
-        textColor     = Color3.fromRGB(230, 230, 230),
+        maxDistance   = 750, -- studs
+        textColor     = Color3.fromRGB(230,230,230),
         textSize      = 13,
         textOutline   = true,
-        bonesColor    = Color3.fromRGB(0, 200, 255),
+        bonesColor    = Color3.fromRGB(0,200,255),
         bonesThickness= 1.5,
-        textTransparency = 0,    -- 0..1 (Drawing.Text uses 0..1)
-        lineTransparency = 1,    -- Drawing.Line transparency is alpha 0..1 (1 = fully visible)
     }
 
     ----------------------------------------------------------------
-    -- Mapping loader (per PlaceId). Fallback to _default.lua.
-    local BASE_MAP_URL = "https://raw.githubusercontent.com/sorinservice/eh-main/main/mappings/"
-    local DEFAULT_MAP  = "_default.lua"
-
-    local function httpLoad(url)
-        return game:HttpGet(url)
-    end
-
-    local function loadMappingFor(placeId)
-        -- try place-specific
-        local urlPlace = BASE_MAP_URL .. tostring(placeId) .. ".lua"
-        local ok1, src1 = pcall(httpLoad, urlPlace)
-        if ok1 and type(src1)=="string" and #src1>0 then
-            local f = loadstring(src1)
-            local okf, tbl = pcall(f)
-            if okf and type(tbl)=="table" then
-                tbl.__isDefault = false
-                return tbl
-            end
-        end
-        -- fallback default
-        local urlDef = BASE_MAP_URL .. DEFAULT_MAP
-        local ok2, src2 = pcall(httpLoad, urlDef)
-        if ok2 and type(src2)=="string" and #src2>0 then
-            local f = loadstring(src2)
-            local okf, tbl = pcall(f)
-            if okf and type(tbl)=="table" then
-                tbl.__isDefault = true
-                return tbl
-            end
-        end
-        return { byId = {}, byName = {}, defaultUnknown = "Unknown Item", __isDefault = true }
-    end
-
-    local Mapping = loadMappingFor(game.PlaceId)
-
-    ----------------------------------------------------------------
-    -- Drawing API availability check
-    local canDraw = (Drawing ~= nil)
-    if not canDraw then
-        tab:AddParagraph("Notice", "Your executor does not expose Drawing API. Visuals tab is disabled.")
-        return
-    end
-
-    ----------------------------------------------------------------
-    -- UI (each element has a Flag so Orion saves/restores it)
+    -- Orion UI (all defaults OFF; each with Flag + Save=true)
     tab:AddToggle({
         Name = "Enable ESP",
-        Default = false,
-        Flag = "esp_enabled",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_enabled",
         Callback = function(v) STATE.enabled = v end
     })
 
     tab:AddToggle({
         Name = "Show Name",
-        Default = true,
-        Flag = "esp_showName",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_showName",
         Callback = function(v) STATE.showName = v end
     })
 
     tab:AddToggle({
         Name = "Show Username",
-        Default = true,
-        Flag = "esp_showUsername",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_showUsername",
         Callback = function(v) STATE.showUsername = v end
     })
 
     tab:AddToggle({
         Name = "Show Distance",
-        Default = true,
-        Flag = "esp_showDistance",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_showDistance",
         Callback = function(v) STATE.showDistance = v end
     })
 
-    local usingDefaultMapping = (Mapping.__isDefault == true)
-
+    -- Equipped: visible, aber wenn nur _default.lua, nicht nutzbar
     tab:AddToggle({
         Name = "Show Equipped Item",
-        Default = false,
-        Flag = "esp_showEquipped",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_showEquipped",
         Callback = function(v)
-            if usingDefaultMapping then
-                -- keep visible but do not allow enabling
-                OrionLib.Flags["esp_showEquipped"]:Set(false)
+            if Mapping.__isDefault then
+                -- Block enabling & snap back to false once the Flag exists
+                STATE.showEquipped = false
+                task.defer(function()
+                    local flag = OrionLib.Flags and OrionLib.Flags["esp_showEquipped"]
+                    if flag and flag.Set then flag:Set(false) end
+                end)
                 OrionLib:MakeNotification({
                     Name = "Mapping",
-                    Content = "No game-specific mapping found. Equipped items are disabled.",
+                    Content = "No game-specific mapping found for this place. Equipped items are disabled.",
                     Time = 4
                 })
-                return
+            else
+                STATE.showEquipped = v
             end
-            STATE.showEquipped = v
         end
     })
 
     tab:AddToggle({
         Name = "Show Skeleton",
-        Default = false,
-        Flag = "esp_showBones",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_showBones",
         Callback = function(v) STATE.showBones = v end
     })
 
     tab:AddToggle({
         Name = "Show Self (developer)",
-        Default = false,
-        Flag = "esp_showSelf",
-        Save = true,
+        Default = false, Save = true, Flag = "esp_showSelf",
         Callback = function(v) STATE.showSelf = v end
     })
 
     tab:AddSlider({
         Name = "ESP Render Range",
         Min = 50, Max = 2500, Increment = 10,
-        Default = STATE.maxDistance,
-        ValueName = "studs",
-        Flag = "esp_renderDist",
-        Save = true,
+        Default = STATE.maxDistance, ValueName = "studs",
+        Save = true, Flag = "esp_renderDist",
         Callback = function(v) STATE.maxDistance = v end
     })
 
     ----------------------------------------------------------------
-    -- Helpers: Drawing constructors
+    -- Drawing helpers
     local function NewText()
         local t = Drawing.new("Text")
         t.Visible = false
@@ -168,180 +140,135 @@ return function(tab, OrionLib)
         t.Outline = STATE.textOutline
         t.Size = STATE.textSize
         t.Center = true
-        t.Transparency = 1 - STATE.textTransparency
+        t.Transparency = 1 -- fully visible
         return t
     end
-
-    local function NewLine(col)
+    local function NewLine()
         local ln = Drawing.new("Line")
         ln.Visible = false
-        ln.Color = col or STATE.bonesColor
+        ln.Color = STATE.bonesColor
         ln.Thickness = STATE.bonesThickness
-        ln.Transparency = STATE.lineTransparency
+        ln.Transparency = 1
         return ln
     end
 
     ----------------------------------------------------------------
-    -- Per-player pool: text + skeleton lines
-    local pool = {}  -- [player] = { text=DrawingText, bones={Line,...} }
+    -- Per-player pool (1 Text + ~14 Lines for skeleton)
+    local pool = {} -- [plr] = { text=Text, bones={Line,...} }
 
-    local function allocFor(plr)
+    local function alloc(plr)
         if pool[plr] then return pool[plr] end
         local obj = { text = NewText(), bones = {} }
-        -- skeleton needs a handful of lines
-        for i=1,16 do obj.bones[i] = NewLine() end
+        for i=1,14 do obj.bones[i] = NewLine() end
         pool[plr] = obj
         return obj
     end
 
-    local function freeFor(plr)
-        local obj = pool[plr]
+    local function hideObj(obj)
         if not obj then return end
-        if obj.text then pcall(function() obj.text:Remove() end) end
-        if obj.bones then
-            for _,ln in ipairs(obj.bones) do pcall(function() ln:Remove() end) end
-        end
+        if obj.text then obj.text.Visible = false end
+        if obj.bones then for _,ln in ipairs(obj.bones) do ln.Visible = false end end
+    end
+
+    local function free(plr)
+        local obj = pool[plr]; if not obj then return end
+        pcall(function() obj.text:Remove() end)
+        for _,ln in ipairs(obj.bones) do pcall(function() ln:Remove() end) end
         pool[plr] = nil
     end
-
-    Players.PlayerRemoving:Connect(function(plr) freeFor(plr) end)
+    Players.PlayerRemoving:Connect(free)
 
     ----------------------------------------------------------------
-    -- Equipped item string via Mapping (placeholder logic)
+    -- Equipped string (uses Mapping; graceful fallback)
     local function getEquippedString(char)
-        -- Example heuristic:
-        -- 1) Tool in backpack/character
-        -- 2) Otherwise first Accessory class name
-        local equippedName
-
-        -- Tool equipped
+        -- 1) Tool on character
         for _,inst in ipairs(char:GetChildren()) do
             if inst:IsA("Tool") then
-                local mapName = Mapping.byName[inst.Name]
-                local mapId   = Mapping.byId[tostring(inst.AssetId or inst.Name)]
-                equippedName = mapName or mapId or inst.Name
-                break
+                local byName = Mapping.byName[inst.Name]
+                local byId   = Mapping.byId[tostring(inst.AssetId or inst.Name)]
+                return tostring(byName or byId or inst.Name)
             end
         end
-
-        if not equippedName then
-            -- Any accessory (hat/face etc.)
-            for _,inst in ipairs(char:GetChildren()) do
-                if inst:IsA("Accessory") then
-                    local mapName = Mapping.byName[inst.Name]
-                    equippedName = mapName or inst.Name
-                    break
-                end
+        -- 2) First Accessory name
+        for _,inst in ipairs(char:GetChildren()) do
+            if inst:IsA("Accessory") then
+                local byName = Mapping.byName[inst.Name]
+                return tostring(byName or inst.Name)
             end
         end
-
-        if not equippedName then
-            return "Nothing equipped"
-        end
-        return tostring(equippedName)
+        return "Nothing equipped"
     end
 
     ----------------------------------------------------------------
-    -- Skeleton joints resolver (supports R15 & R6 best-effort)
-    local function headPos(char) local h=char:FindFirstChild("Head"); return h and h.Position end
+    -- Skeleton drawing (R15 preferred; R6 fallback)
     local function partPos(char, name)
         local p = char:FindFirstChild(name); return p and p.Position
     end
-
     local function setLine(ln, a, b)
         if not (a and b) then ln.Visible=false; return end
-        local A,visA = Camera:WorldToViewportPoint(a)
-        local B,visB = Camera:WorldToViewportPoint(b)
-        local on = visA or visB
+        local A, visA = Camera:WorldToViewportPoint(a)
+        local B, visB = Camera:WorldToViewportPoint(b)
+        if not (visA or visB) then ln.Visible=false; return end
         ln.From = Vector2.new(A.X, A.Y)
         ln.To   = Vector2.new(B.X, B.Y)
-        ln.Visible = on
+        ln.Color = STATE.bonesColor
+        ln.Thickness = STATE.bonesThickness
+        ln.Visible = true
     end
 
+    local R15_Joints = {
+        {"UpperTorso","Head"},
+        {"LowerTorso","UpperTorso"},
+        {"UpperTorso","LeftUpperArm"},
+        {"LeftUpperArm","LeftLowerArm"},
+        {"LeftLowerArm","LeftHand"},
+        {"UpperTorso","RightUpperArm"},
+        {"RightUpperArm","RightLowerArm"},
+        {"RightLowerArm","RightHand"},
+        {"LowerTorso","LeftUpperLeg"},
+        {"LeftUpperLeg","LeftLowerLeg"},
+        {"LeftLowerLeg","LeftFoot"},
+        {"LowerTorso","RightUpperLeg"},
+        {"RightUpperLeg","RightLowerLeg"},
+        {"RightLowerLeg","RightFoot"},
+    }
+    local R6_Joints = {
+        {"Torso","Head"},
+        {"Torso","Left Arm"},
+        {"Torso","Right Arm"},
+        {"Torso","Left Leg"},
+        {"Torso","Right Leg"},
+        -- duplicate links to keep ~14 lines; they’ll overlap but are harmless
+        {"Left Arm","Left Arm"},
+        {"Right Arm","Right Arm"},
+        {"Left Leg","Left Leg"},
+        {"Right Leg","Right Leg"},
+        {"Left Arm","Left Arm"},
+        {"Right Arm","Right Arm"},
+        {"Left Leg","Left Leg"},
+        {"Right Leg","Right Leg"},
+        {"Torso","Torso"},
+    }
+
     local function drawSkeleton(obj, char)
-        -- Try R15 names first; fallback to common R6 names if missing.
-        local HRP = char:FindFirstChild("HumanoidRootPart")
-        if not HRP then
-            for _,ln in ipairs(obj.bones) do ln.Visible=false end
-            return
-        end
-
-        local joints = {
-            -- spine
-            { "UpperTorso", "Head" },
-            { "LowerTorso", "UpperTorso" },
-
-            -- arms (left)
-            { "UpperTorso","LeftUpperArm" },
-            { "LeftUpperArm","LeftLowerArm" },
-            { "LeftLowerArm","LeftHand" },
-
-            -- arms (right)
-            { "UpperTorso","RightUpperArm" },
-            { "RightUpperArm","RightLowerArm" },
-            { "RightLowerArm","RightHand" },
-
-            -- legs (left)
-            { "LowerTorso","LeftUpperLeg" },
-            { "LeftUpperLeg","LeftLowerLeg" },
-            { "LeftLowerLeg","LeftFoot" },
-
-            -- legs (right)
-            { "LowerTorso","RightUpperLeg" },
-            { "RightUpperLeg","RightLowerLeg" },
-            { "RightLowerLeg","RightFoot" },
-        }
-
-        -- If R6, adapt names
         local isR6 = (char:FindFirstChild("Torso") ~= nil)
-        if isR6 then
-            joints = {
-                { "Torso","Head" },
-                -- arms
-                { "Torso","Left Arm" }, { "Left Arm","Left Arm" }, { "Left Arm","Left Arm" },
-                { "Torso","Right Arm" },{ "Right Arm","Right Arm" },{ "Right Arm","Right Arm" },
-                -- legs
-                { "Torso","Left Leg" }, { "Left Leg","Left Leg" }, { "Left Leg","Left Leg" },
-                { "Torso","Right Leg"},{ "Right Leg","Right Leg"},{ "Right Leg","Right Leg" },
-            }
-        end
-
+        local joints = isR6 and R6_Joints or R15_Joints
         for i, pair in ipairs(joints) do
-            local a = partPos(char, pair[1])
-            local b = partPos(char, pair[2])
-            setLine(obj.bones[i], a, b)
-            obj.bones[i].Color = STATE.bonesColor
-            obj.bones[i].Thickness = STATE.bonesThickness
-            obj.bones[i].Transparency = STATE.lineTransparency
+            setLine(obj.bones[i], partPos(char, pair[1]), partPos(char, pair[2]))
         end
-        -- hide any unused lines
         for i = #joints+1, #obj.bones do
             obj.bones[i].Visible = false
         end
     end
 
     ----------------------------------------------------------------
-    -- Per-frame updater
+    -- Label builder
     local function buildLabel(plr, char, dist)
         local lines = {}
-
-        if STATE.showName then
-            table.insert(lines, "@" .. (plr.DisplayName or plr.Name))
-        end
-        if STATE.showUsername then
-            table.insert(lines, "(" .. plr.Name .. ")")
-        end
-        if STATE.showDistance then
-            table.insert(lines, ("Distance: %d studs"):format(math.floor(dist + 0.5)))
-        end
-        if STATE.showEquipped then
-            table.insert(lines, getEquippedString(char))
-        end
-
-        if #lines == 0 then
-            return "" -- nothing to show
-        end
-        -- first line (name) bold effect via outline already; just join with newlines
+        if STATE.showName     then table.insert(lines, plr.DisplayName or plr.Name) end
+        if STATE.showUsername then table.insert(lines, "@" .. plr.Name) end
+        if STATE.showDistance then table.insert(lines, ("Distance: %d studs"):format(math.floor(dist+0.5))) end
+        if STATE.showEquipped then table.insert(lines, getEquippedString(char)) end
         return table.concat(lines, "\n")
     end
 
@@ -350,88 +277,69 @@ return function(tab, OrionLib)
         return true
     end
 
+    ----------------------------------------------------------------
+    -- Render loop
     local function updateAll()
         if not STATE.enabled then
-            -- hide everything fast
-            for _,obj in pairs(pool) do
-                if obj.text then obj.text.Visible=false end
-                if obj.bones then for _,ln in ipairs(obj.bones) do ln.Visible=false end end
-            end
+            for _,obj in pairs(pool) do hideObj(obj) end
             return
         end
 
+        local myHRP = LocalPlayer.Character
+                        and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         for _,plr in ipairs(Players:GetPlayers()) do
             if isValidTarget(plr) then
                 local char = plr.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hum and hrp and hum.Health > 0 then
-                    local obj = allocFor(plr)
+                local hum  = char and char:FindFirstChildOfClass("Humanoid")
+                local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+                if hum and hrp and hum.Health > 0 and myHRP then
+                    local dist = (myHRP.Position - hrp.Position).Magnitude
+                    local obj  = alloc(plr)
 
-                    -- distance cull
-                    local dist = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"))
-                        and (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
-                        or math.huge
                     if dist <= STATE.maxDistance then
-                        local screenPos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
+                        local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
                         if onScreen then
-                            -- TEXT
+                            -- Text
                             local label = buildLabel(plr, char, dist)
                             if label ~= "" then
                                 obj.text.Text = label
-                                obj.text.Position = Vector2.new(screenPos.X, screenPos.Y)
+                                obj.text.Position = Vector2.new(pos.X, pos.Y)
                                 obj.text.Color = STATE.textColor
                                 obj.text.Size = STATE.textSize
                                 obj.text.Outline = STATE.textOutline
-                                obj.text.Transparency = 1 - STATE.textTransparency
                                 obj.text.Visible = true
                             else
                                 obj.text.Visible = false
                             end
-
-                            -- SKELETON
+                            -- Skeleton
                             if STATE.showBones then
                                 drawSkeleton(obj, char)
                             else
                                 for _,ln in ipairs(obj.bones) do ln.Visible=false end
                             end
                         else
-                            obj.text.Visible = false
-                            for _,ln in ipairs(obj.bones) do ln.Visible=false end
+                            hideObj(obj)
                         end
                     else
-                        obj.text.Visible = false
-                        for _,ln in ipairs(obj.bones) do ln.Visible=false end
+                        hideObj(obj)
                     end
                 else
-                    -- invalid char
-                    local obj = pool[plr]
-                    if obj then
-                        obj.text.Visible = false
-                        for _,ln in ipairs(obj.bones) do ln.Visible=false end
-                    end
+                    hideObj(pool[plr])
                 end
             else
-                -- not a valid target => hide
-                local obj = pool[plr]
-                if obj then
-                    obj.text.Visible = false
-                    for _,ln in ipairs(obj.bones) do ln.Visible=false end
-                end
+                hideObj(pool[plr])
             end
         end
     end
 
-    ----------------------------------------------------------------
-    -- Render loop
-    local connection
-    connection = RunService.RenderStepped:Connect(updateAll)
+    local conn = RunService.RenderStepped:Connect(updateAll)
 
-    -- Safety: clean up if script/UI is closed
-    local function cleanup()
-        if connection then pcall(function() connection:Disconnect() end) end
-        for plr,_ in pairs(pool) do freeFor(plr) end
-    end
-    OrionLib.Connections = OrionLib.Connections or {}
-    table.insert(OrionLib.Connections, {Disconnect = cleanup})
+    -- Cleanup on UI destroy
+    table.insert(OrionLib.Connections, {
+        Disconnect = function()
+            if conn then pcall(function() conn:Disconnect() end) end
+            for plr,_ in pairs(pool) do free(plr) end
+        end
+    })
+
 end
