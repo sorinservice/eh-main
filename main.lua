@@ -48,7 +48,7 @@ end
 
 -- Tabs laden (Reihenfolge = Anzeige-Reihenfolge)
 attachTab("Info",    TABS.Info)
--- attachTab("Visuals", TABS.Visuals) -- erst aktivieren, wenn visuals.lua liegt
+attachTab("Visuals", TABS.Visuals)
 
 -- UI starten
 OrionLib:Init()
