@@ -14,6 +14,7 @@ local Window = OrionLib:MakeWindow({
 local TABS = {
     Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/info.lua",
     Visuals = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/visuals.lua",
+    Bypass = "https://raw.githubusercontent.com/sorinservice/eh-main//main/tabs/bypass.lua"
 }
 
 -- Loader-Helfer
@@ -49,6 +50,7 @@ end
 -- Tabs laden (Reihenfolge = Anzeige-Reihenfolge)
 attachTab("Info",    TABS.Info)
 attachTab("Visuals", TABS.Visuals)
+attachTab("Bypass",  TABS.Bypass)
 
 -- UI starten
 OrionLib:Init()
