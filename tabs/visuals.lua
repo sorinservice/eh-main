@@ -1,7 +1,6 @@
 -- tabs/visuals.lua
 -- Visuals / ESP for SorinHub (Orion UI)
--- Per-player: DisplayName, @Username, Distance, Equipped, Skeleton, Team color
--- VSC Version
+-- Per-player: Team (optional), DisplayName, @Username, Distance, Equipped (grau), Skeleton, Team color
 
 return function(tab, OrionLib)
 
@@ -16,14 +15,14 @@ return function(tab, OrionLib)
     local Camera      = Workspace.CurrentCamera
 
     ----------------------------------------------------------------
-    -- Drawing API prüfen
+    -- Drawing API check
     if not Drawing then
         tab:AddParagraph("Notice", "Your executor does not expose the Drawing API. Visuals are disabled.")
         return
     end
 
     ----------------------------------------------------------------
-    -- Mapping loader (per PlaceId). Fallback zu _default.lua
+    -- Mapping loader (per PlaceId). Fallback to _default.lua
     local BASE_MAP_URL = "https://raw.githubusercontent.com/sorinservice/eh-main/main/mappings/"
     local DEFAULT_MAP  = "_default.lua"
 
@@ -46,19 +45,19 @@ return function(tab, OrionLib)
     local Mapping = loadMappingFor(game.PlaceId)
 
     ----------------------------------------------------------------
-    -- Konfiguration / State (persisted via Flags)
+    -- Config / State (persisted via Flags)
     local STATE = {
-        -- Visual content
+        -- which lines to show
+        showTeam       = false,   -- colorize + optional team line
+        showTeamName   = true,    -- include team name as first line
         showName       = false,
         showUsername   = false,
         showDistance   = false,
         showEquipped   = false,
         showBones      = false,
         showSelf       = false,
-        showTeam       = false,   -- Team check (color & optional text)
-        showTeamName   = true,    -- Teamname zusätzlich im Label
 
-        -- Render/Erscheinung
+        -- look & feel
         maxDistance    = 750,     -- studs
         textColorBase  = Color3.fromRGB(230,230,230),
         textSize       = 13,
@@ -66,83 +65,72 @@ return function(tab, OrionLib)
         bonesColorBase = Color3.fromRGB(0,200,255),
         bonesThickness = 1.5,
 
-        -- DEV: immer Rohdaten für Equipped anzeigen (auch wenn Mapping vorhanden)
+        -- dev: append raw tool id/name if not mapped
         devShowRawEquipped = false,
     }
 
-    -- Team-Farben optional über Namen mappen (leer lassen = Roblox TeamColor nutzen)
+    -- Optional fixed team colors by name (otherwise Roblox TeamColor is used)
     local TEAM_COLORS = {
-        -- Beispiel:
-        -- ["Police"] = Color3.fromRGB(0, 170, 255),
-        -- ["Criminals"] = Color3.fromRGB(255, 80, 80),
+        -- ["Police"] = Color3.fromRGB(0,170,255),
+        -- ["Criminals"] = Color3.fromRGB(255,80,80),
     }
 
     local function colorForTeam(plr)
         if not (plr and plr.Team) then return nil end
         local name = plr.Team.Name
         if TEAM_COLORS[name] then return TEAM_COLORS[name] end
-        -- fallback: Roblox TeamColor
         local ok, col = pcall(function() return plr.Team.TeamColor.Color end)
         if ok and col then return col end
         return nil
     end
 
     ----------------------------------------------------------------
-    -- UI (alles OFF per Default; Flags persistieren)
+    -- UI (defaults OFF; Orion flags persist)
     tab:AddToggle({
-        Name = "Show Name",
+        Name = "Team color (and show team name)",
+        Default = false, Save = true, Flag = "esp_teamCheck",
+        Callback = function(v) STATE.showTeam = v end
+    })
+    tab:AddToggle({
+        Name = "Show team name as first line",
+        Default = true, Save = true, Flag = "esp_teamName",
+        Callback = function(v) STATE.showTeamName = v end
+    })
+    tab:AddToggle({
+        Name = "Show Display Name",
         Default = false, Save = true, Flag = "esp_showName",
         Callback = function(v) STATE.showName = v end
     })
-
     tab:AddToggle({
-        Name = "Show Username",
+        Name = "Show @Username",
         Default = false, Save = true, Flag = "esp_showUsername",
         Callback = function(v) STATE.showUsername = v end
     })
-
     tab:AddToggle({
         Name = "Show Distance",
         Default = false, Save = true, Flag = "esp_showDistance",
         Callback = function(v) STATE.showDistance = v end
     })
-
     tab:AddToggle({
-        Name = "Show Equipped Item",
+        Name = "Show Equipped (tools only)",
         Default = false, Save = true, Flag = "esp_showEquipped",
         Callback = function(v) STATE.showEquipped = v end
     })
-
     tab:AddToggle({
         Name = "Show Skeleton",
         Default = false, Save = true, Flag = "esp_showBones",
         Callback = function(v) STATE.showBones = v end
     })
-
     tab:AddToggle({
         Name = "Show Self (developer)",
         Default = false, Save = true, Flag = "esp_showSelf",
         Callback = function(v) STATE.showSelf = v end
     })
-
-    tab:AddToggle({
-        Name = "Team check (colorize)",
-        Default = false, Save = true, Flag = "esp_teamCheck",
-        Callback = function(v) STATE.showTeam = v end
-    })
-
-    tab:AddToggle({
-        Name = "Show team name in label",
-        Default = true, Save = true, Flag = "esp_teamName",
-        Callback = function(v) STATE.showTeamName = v end
-    })
-
     tab:AddToggle({
         Name = "Debug raw equipped (append ID/Name)",
         Default = false, Save = true, Flag = "esp_rawEquipped",
         Callback = function(v) STATE.devShowRawEquipped = v end
     })
-
     tab:AddSlider({
         Name = "ESP Render Range",
         Min = 50, Max = 2500, Increment = 10,
@@ -152,7 +140,7 @@ return function(tab, OrionLib)
     })
 
     ----------------------------------------------------------------
-    -- Drawing helpers (2 Texte pro Spieler: main + equipped)
+    -- Drawing helpers
     local function NewText()
         local t = Drawing.new("Text")
         t.Visible = false
@@ -173,15 +161,14 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- Per-player pool
-    -- textMain: Name/Username/Distance/Team
-    -- textEquip: Equipped (grau) unter main
+    -- Per-player pool: main + equip text + skeleton lines
     local pool = {} -- [plr] = { textMain=Text, textEquip=Text, bones={Line,...} }
 
     local function alloc(plr)
         if pool[plr] then return pool[plr] end
         local obj = { textMain = NewText(), textEquip = NewText(), bones = {} }
-        obj.textEquip.Color = Color3.fromRGB(175,175,175) -- equip grau
+        obj.textEquip.Color = Color3.fromRGB(175,175,175) -- equipped gray
+        obj.textEquip.Size  = math.max(11, STATE.textSize - 1)
         for i=1,14 do obj.bones[i] = NewLine() end
         pool[plr] = obj
         return obj
@@ -204,7 +191,7 @@ return function(tab, OrionLib)
     Players.PlayerRemoving:Connect(free)
 
     ----------------------------------------------------------------
-    -- Equipped string (Tools-only; Accessories werden ignoriert)
+    -- Equipped string (Tools only; ignore accessories)
     local function rawIdFromTool(tool)
         local id
         pcall(function() id = tool.AssetId end)
@@ -213,24 +200,18 @@ return function(tab, OrionLib)
     end
 
     local function getEquippedString(char)
-        -- Nur echte Tools berücksichtigen
         local toolFound, txt = false, nil
         for _,inst in ipairs(char:GetChildren()) do
             if inst:IsA("Tool") then
                 toolFound = true
-                local byName = Mapping.byName and Mapping.byName[inst.Name]
-                local byId   = nil
-                do
-                    local rid = rawIdFromTool(inst)
-                    if rid and Mapping.byId then byId = Mapping.byId[rid] end
-                end
+                local byName = (Mapping.byName or {})[inst.Name]
+                local rid    = rawIdFromTool(inst)
+                local byId   = rid and (Mapping.byId or {})[rid] or nil
 
                 if byName or byId then
                     txt = tostring(byName or byId)
                 else
-                    -- Rohdaten optional anhängen
                     if STATE.devShowRawEquipped then
-                        local rid = rawIdFromTool(inst)
                         if rid then
                             txt = string.format("Unknown (Id: %s | Name: %s)", rid, inst.Name)
                         else
@@ -310,26 +291,31 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- Label builder (zweizeilig: main + equipped)
-    local function buildMainLabel(plr, dist)
-        local lines = {}
-        -- Teamname vorn dran (optional)
-        if STATE.showTeam and STATE.showTeamName and plr.Team then
-            table.insert(lines, "["..plr.Team.Name.."]")
-        end
-        if STATE.showName     then table.insert(lines, plr.DisplayName or plr.Name) end
-        if STATE.showUsername then table.insert(lines, "@" .. plr.Name) end
-        if STATE.showDistance then table.insert(lines, ("Distance: %d studs"):format(math.floor(dist+0.5))) end
-        return table.concat(lines, "  ")
-    end
-
+    -- Helpers
     local function isValidTarget(plr)
         if plr == LocalPlayer and not STATE.showSelf then return false end
         return true
     end
 
+    local function buildMainLabel(plr, dist)
+        local lines = {}
+        -- Team as first line (no brackets)
+        if STATE.showTeam and STATE.showTeamName and plr.Team then
+            table.insert(lines, plr.Team.Name)
+        end
+        if STATE.showName     then table.insert(lines, plr.DisplayName or plr.Name) end
+        if STATE.showUsername then table.insert(lines, "@" .. plr.Name) end
+        if STATE.showDistance then table.insert(lines, ("Distance: %d studs"):format(math.floor(dist+0.5))) end
+        return table.concat(lines, "\n")
+    end
+
+    local function countLines(txt)
+        if not txt or txt == "" then return 0 end
+        return #string.split(txt, "\n")
+    end
+
     ----------------------------------------------------------------
-    -- Render loop (ESP immer aktiv)
+    -- Render loop (ESP always running; visibility controlled by toggles)
     local function updateAll()
         local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         for _,plr in ipairs(Players:GetPlayers()) do
@@ -343,17 +329,17 @@ return function(tab, OrionLib)
                     if dist <= STATE.maxDistance then
                         local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
                         if onScreen then
-                            -- Teamfarbe (optional)
-                            local col = STATE.textColorBase
-                            local teamCol = STATE.showTeam and colorForTeam(plr) or nil
-                            if teamCol then col = teamCol end
+                            -- Team color (text + skeleton)
+                            local colorMain = STATE.textColorBase
+                            local teamCol   = STATE.showTeam and colorForTeam(plr) or nil
+                            if teamCol then colorMain = teamCol end
 
-                            -- MAIN label
+                            -- MAIN (stack all requested lines)
                             local mainText = buildMainLabel(plr, dist)
                             if mainText ~= "" then
                                 obj.textMain.Text = mainText
                                 obj.textMain.Position = Vector2.new(pos.X, pos.Y)
-                                obj.textMain.Color = col
+                                obj.textMain.Color = colorMain
                                 obj.textMain.Size = STATE.textSize
                                 obj.textMain.Outline = STATE.textOutline
                                 obj.textMain.Visible = true
@@ -361,11 +347,12 @@ return function(tab, OrionLib)
                                 obj.textMain.Visible = false
                             end
 
-                            -- EQUIPPED label (grau) leicht darunter
+                            -- EQUIPPED (always below the last main line)
                             if STATE.showEquipped then
-                                local eq = getEquippedString(char)
-                                obj.textEquip.Text = eq
-                                obj.textEquip.Position = Vector2.new(pos.X, pos.Y + STATE.textSize + 2)
+                                local lines = countLines(mainText)
+                                local yOffset = lines * STATE.textSize + 2
+                                obj.textEquip.Text = getEquippedString(char)
+                                obj.textEquip.Position = Vector2.new(pos.X, pos.Y + yOffset)
                                 obj.textEquip.Size = math.max(11, STATE.textSize - 1)
                                 obj.textEquip.Outline = STATE.textOutline
                                 obj.textEquip.Visible = true
@@ -396,11 +383,12 @@ return function(tab, OrionLib)
 
     local conn = RunService.RenderStepped:Connect(updateAll)
 
-    -- Cleanup bei UI-Close
+    -- Cleanup when UI/script closes
     table.insert(OrionLib.Connections, {
         Disconnect = function()
             if conn then pcall(function() conn:Disconnect() end) end
             for plr,_ in pairs(pool) do free(plr) end
         end
     })
+
 end
