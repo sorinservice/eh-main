@@ -16,9 +16,9 @@ return function(tab, OrionLib)
     -- State (controlled by UI)
     local STATE = {
         enabled       = false,
-        showName      = true,
-        showUsername  = true,
-        showDistance  = true,
+        showName      = false,
+        showUsername  = false,
+        showDistance  = false,
         showEquipped  = false,
         showBones     = false,
         showSelf      = false,
