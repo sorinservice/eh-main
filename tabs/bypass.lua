@@ -1,45 +1,111 @@
 -- tabs/bypass.lua
--- VoiceChat: minimal “Join Voice” helper + info paragraph.
+-- VoiceChat helpers (safe + executor friendly) — ohne Soft Reconnect
 
 return function(tab, OrionLib)
-    local VCS
-    local ok, err = pcall(function()
-        VCS = game:GetService("VoiceChatService")
-    end)
+    local Players          = game:GetService("Players")
+    local VoiceChatService = game:GetService("VoiceChatService")
+    local LP               = Players.LocalPlayer
 
+    -- UI: Live-Status (wird aktualisiert)
+    local statusPara = tab:AddParagraph("VoiceChat Status", "Checking...")
+    local function setStatus(txt) pcall(function() statusPara:Set(txt) end) end
+
+    -- Eligibility check
+    local function isEnabledForUser()
+        local ok, enabled = pcall(function()
+            return VoiceChatService:IsVoiceEnabledForUserIdAsync(LP.UserId)
+        end)
+        return ok and enabled
+    end
+
+    -- Statusstring zusammenbauen
+    local function readStateString()
+        local parts = {}
+        table.insert(parts, isEnabledForUser() and "Eligible: yes" or "Eligible: no")
+        local ok, state = pcall(function()
+            if typeof(VoiceChatService.GetStateForUserAsync) == "function" then
+                return VoiceChatService:GetStateForUserAsync(LP.UserId)
+            end
+        end)
+        if ok and state ~= nil then table.insert(parts, "State: "..tostring(state)) end
+        return table.concat(parts, "  |  ")
+    end
+    setStatus(readStateString())
+
+    -- Versuche *irgendeine* Join-Variante (inkl. deiner alten)
+    local function tryJoinOnce()
+        if typeof(VoiceChatService.joinVoice) == "function" then
+            return pcall(function() VoiceChatService:joinVoice() end)
+        end
+        if typeof(VoiceChatService.Join) == "function" then
+            return pcall(function() VoiceChatService:Join() end)
+        end
+        if typeof(VoiceChatService.JoinAsync) == "function" then
+            return pcall(function() VoiceChatService:JoinAsync() end)
+        end
+        if typeof(VoiceChatService.JoinByGroupId) == "function" then
+            return pcall(function() VoiceChatService:JoinByGroupId(tostring(game.PlaceId)) end)
+        end
+        return false, "No join* method available on VoiceChatService"
+    end
+
+    -- Button: Join
     tab:AddButton({
         Name = "Anti-VC-Ban (Join Voice)",
         Callback = function()
-            if not ok or not VCS then
+            if not isEnabledForUser() then
                 OrionLib:MakeNotification({
                     Name = "VoiceChat",
-                    Content = "VoiceChatService not available on this client/account.",
+                    Content = "Voice is not enabled for this account or game.",
                     Time = 4
                 })
+                setStatus(readStateString())
                 return
             end
-
-            -- Try both possible method names, depending on client
-            local success, msg = pcall(function()
-                if typeof(VCS.JoinVoice) == "function" then
-                    VCS:JoinVoice()
-                elseif typeof(VCS.joinVoice) == "function" then
-                    VCS:joinVoice()
-                else
-                    error("JoinVoice is not a valid member of VoiceChatService")
-                end
-            end)
-
+            local ok, err = tryJoinOnce()
             OrionLib:MakeNotification({
-                Name = success and "VoiceChat" or "VoiceChat Error",
-                Content = success and "JoinVoice invoked (if eligible)." or tostring(msg),
-                Time = 4
+                Name = "VoiceChat",
+                Content = ok and "Join attempt sent." or ("Join failed: "..tostring(err)),
+                Time = ok and 3 or 5
             })
+            task.delay(0.5, function() setStatus(readStateString()) end)
         end
     })
 
+    -- Toggle: Auto-Retry
+    local AUTO = { on = false }
+    tab:AddToggle({
+        Name = "Auto-Retry join (every 5s)",
+        Default = false, Save = true, Flag = "vc_autoretry",
+        Callback = function(v)
+            AUTO.on = v
+            if v then
+                task.spawn(function()
+                    while AUTO.on do
+                        if isEnabledForUser() then pcall(tryJoinOnce) end
+                        setStatus(readStateString())
+                        for i=1,50 do if not AUTO.on then break end task.wait(0.1) end
+                    end
+                end)
+            end
+        end
+    })
+
+    -- Info
     tab:AddParagraph(
         "How it works?",
-        "If your VC is blocked in the current server, this *may* force a reconnect."
+        "Tries several join methods.\n" ..
+        "If it fails, enable Auto-Retry."
     )
+
+    -- Falls Signal existiert: Status updaten
+    pcall(function()
+        if typeof(VoiceChatService.PlayerVoiceChatStateChanged) == "RBXScriptSignal" then
+            VoiceChatService.PlayerVoiceChatStateChanged:Connect(function(userId, state)
+                if userId == LP.UserId then
+                    setStatus("State: "..tostring(state).."  |  "..(isEnabledForUser() and "Eligible: yes" or "Eligible: no"))
+                end
+            end)
+        end
+    end)
 end
