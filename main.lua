@@ -6,7 +6,7 @@ local Window = OrionLib:MakeWindow({
     Name        = "SorinHub | Developer Beta Script",
     IntroText   = "SorinHub Developer Beta",
     IntroIcon   = "rbxassetid://122633020844347",
-    SaveConfig  = false,              -- auf true stellen, wenn du Flags speichern willst
+    SaveConfig  = true,              -- auf true stellen, wenn du Flags speichern willst
     ConfigFolder= "SorinConfig"
 })
 
