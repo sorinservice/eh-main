@@ -8,7 +8,7 @@ return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- DEV switch: allow using "Equipped" even with _default.lua mapping
     -- Set to true while you collect raw ids/names in unknown games.
-    local DEV_AllowEquippedWithoutMapping = true
+    local DEV_AllowEquippedWithoutMapping = false
 
     ----------------------------------------------------------------
     -- Services
