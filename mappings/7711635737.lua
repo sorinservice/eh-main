@@ -9,14 +9,42 @@
 return {
     -- Mapping nach Name (Strings, nicht Zahlen!)
     byName = {
-        ["Phone"] = "Phone",
+        -- Normal Items
+        ["Phone"]         = "Phone",
         ["Flashlight"]    = "Flashlight",
-        ["Cones"]      = "Cones",
-        ["GPS Tracker"] = "GPS-Tracker", 
-        ["Barrier Tape"] = "Barrier Tape",
-        ["Ladder"]    = "Ladder",
-        --["Cones"]      = "Cones",
-        --["GPS Tracker"] = "GPS-Tracker", 
+        ["Cones"]         = "Cones",
+        ["GPS-Tracker"]   = "GPS-Tracker", 
+        ["Barrier Tape"]  = "Barrier Tape",
+        ["Ladder"]        = "Ladder",
+
+        -- Police Items
+        ["Handcuffs"]     = "Handcuffs",
+        ["Baton"]         = "Baton",
+        ["Police Trowel"] = "Police Trowel",
+        ["Taser"]         = "Taser",
+        ["Radar Gun"]     = "Radar Gun",
+        ["Stop Stick"]    = "Stop Stick",
+        ["Police Tape"]   = "Police Tape",
+
+        -- Job Items
+        ["Warning Beacons"] = "Warning Beacons",
+        
+        -- Weapons
+        ["Glock 17"]      = "Glock 17",
+        ["Flashbang"]     = "Flashbang",
+        ["MP5"]           = "Weapon MP5",
+        ["G36"]           = "Weapon G36",
+
+        -- Medical Items
+        ["Infusion"]     = "Infusion",
+        ["Bandage"]       = "Bandage",
+        ["Blood Transfusion"] = "Blood Transfusion",
+        ["Fire Tape"] = "Fire Tape",
+
+        -- Food & Drinks
+        ["Water Bottle"] = "Water Bottle",
+        ["Energy Drink"] = "Energy Drink",
+        ["Cookie"] = "Cookie",
     },
 
     -- Text, falls weder ID noch Name gefunden wird
