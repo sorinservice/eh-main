@@ -33,7 +33,7 @@ return function(tab, OrionLib)
     tab:AddParagraph(
         "Thanks for testing SorinHub",
         "This is the Beta Version.\n" ..
-        "Bugs, fehlende Features und unerwartetes Verhalten sind möglich. Nutzung auf eigenes Risiko."
+        "New: Graphics Tab"
     )
 
     tab:AddButton({
