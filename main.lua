@@ -1,11 +1,10 @@
 -- Orion laden
-local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/sorinservice/orion-lib/main/orion.lua"))()
+local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/sorinservice/eh-main/refs/heads/dev/orion-lib/orion-loader.lua"))()
 
 -- Fenster erstellen
 local Window = OrionLib:MakeWindow({
     Name        = "SorinHub Developer",
     IntroText   = "SorinHub | Developer Script",
-    IntroIcon   = "rbxassetid://122633020844347",
     SaveConfig  = true,
     ConfigFolder= "SorinConfig"
 })
