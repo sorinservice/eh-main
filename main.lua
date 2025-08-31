@@ -49,11 +49,11 @@ local function attachTab(name, url, iconKey)
 end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
-attachTab("Info",    TABS.Info,    "main")
-attachTab("ESPs", TABS.ESPs, "main")
+attachTab("Info",    TABS.Info,      "info")
+attachTab("ESPs", TABS.ESPs,         "main")
 attachTab("Graphics", TABS.Graphics, "main")
-attachTab("Bypass",  TABS.Bypass,  "main")
-attachTab("Misc", TABS.Misc, "main")
+attachTab("Bypass",  TABS.Bypass,    "main")
+attachTab("Misc", TABS.Misc,         "main")
 
 -- UI starten
 OrionLib:Init()
