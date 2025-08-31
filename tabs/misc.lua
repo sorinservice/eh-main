@@ -1,5 +1,5 @@
--- tabs/utility.lua
--- Utility: only a clean respawn that drops/loses all tools.
+-- tabs/misc.lua
+-- Misc: only a clean respawn that drops/loses all tools.
 
 return function(tab, OrionLib)
     local Players = game:GetService("Players")
@@ -39,5 +39,5 @@ return function(tab, OrionLib)
         end
     })
 
-    tab:AddParagraph("Note", "This forces a respawn and deletes all Tools from your Backpack and Character first.")
+    tab:AddParagraph("Note", "This forces a respawn and deletes all Tools from your Backpack.")
 end
