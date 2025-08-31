@@ -8,9 +8,9 @@ local Config = {
   CHANNEL = "DEV",
 
   -- GUI & Intro
-  GuiName     = "SorinUI",
+  GuiName     = "SorinHub Main",
   IntroEnabled = true,
-  IntroText    = "SorinHub",
+  IntroText    = "Loading SorinHub",
   IntroIcon    = "rbxassetid://8834748103", -- kleines Lade-Icon
   WindowIcon   = "rbxassetid://122633020844347", -- SorinLogo in der TopBar (optional)
 
