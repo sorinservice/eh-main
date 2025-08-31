@@ -22,27 +22,17 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- Mapping loader (per PlaceId). Fallback to _default.lua
-    local BASE_MAP_URL = "https://raw.githubusercontent.com/sorinservice/eh-main/main/mappings/"
-    local DEFAULT_MAP  = "_default.lua"
-
-    local function httpLoad(u) return game:HttpGet(u) end
-    local function loadMappingFor(placeId)
-        local ok, src = pcall(httpLoad, BASE_MAP_URL .. tostring(placeId) .. ".lua")
-        if ok and type(src)=="string" and #src>0 then
-            local f = loadstring(src)
-            local ok2, t = pcall(f)
-            if ok2 and type(t)=="table" then t.__isDefault=false; return t end
+local function getEquippedString(char)
+    for _, inst in ipairs(char:GetChildren()) do
+        if inst:IsA("Tool") then
+            return inst.Name  -- <<< Nimmt direkt den Namen aus dem Spiel
         end
-        local okD, srcD = pcall(httpLoad, BASE_MAP_URL .. DEFAULT_MAP)
-        if okD and type(srcD)=="string" and #srcD>0 then
-            local fD = loadstring(srcD)
-            local ok2, tD = pcall(fD)
-            if ok2 and type(tD)=="table" then tD.__isDefault=true; return tD end
-        end
-        return { byId = {}, byName = {}, defaultUnknown = "Unknown Item", __isDefault = true }
     end
-    local Mapping = loadMappingFor(game.PlaceId)
+    return "Nothing equipped"
+end
+
+
+
 
     ----------------------------------------------------------------
     -- Config / State (persisted via Flags)

@@ -35,11 +35,15 @@ return {
         ["MP5"]           = "Weapon MP5",
         ["G36"]           = "Weapon G36",
 
-        -- Medical Items
+        -- Medical/Firefighter Items
         ["Infusion"]     = "Infusion",
         ["Bandage"]       = "Bandage",
         ["Blood Transfusion"] = "Blood Transfusion",
         ["Fire Tape"] = "Fire Tape",
+        ["Circular Saw"] = "Circular Saw",
+        ["Sandbag"] = "Sandbag",
+        ["Fire Hose"] = "Fire Hose",
+        
 
         -- Food & Drinks
         ["Water Bottle"] = "Water Bottle",
