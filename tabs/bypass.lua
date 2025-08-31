@@ -72,24 +72,6 @@ return function(tab, OrionLib)
         end
     })
 
-    -- Toggle: Auto-Retry
-    local AUTO = { on = false }
-    tab:AddToggle({
-        Name = "Auto-Retry join (every 5s)",
-        Default = false, Save = true, Flag = "vc_autoretry",
-        Callback = function(v)
-            AUTO.on = v
-            if v then
-                task.spawn(function()
-                    while AUTO.on do
-                        if isEnabledForUser() then pcall(tryJoinOnce) end
-                        setStatus(readStateString())
-                        for i=1,50 do if not AUTO.on then break end task.wait(0.1) end
-                    end
-                end)
-            end
-        end
-    })
 
     -- Info
     tab:AddParagraph(
