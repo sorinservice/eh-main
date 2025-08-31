@@ -25,29 +25,25 @@ local OrionLib = {
 	SaveCfg = false
 }
 
---Feather Icons https://github.com/evoincorp/lucideblox/tree/master/src/modules/util - Created by 7kayoh
-local Icons = {"chevron-right"}
---[[
-local Success, Response = pcall(function()
-	Icons = HttpService:JSONDecode(game:HttpGetAsync("https://raw.githubusercontent.com/evoincorp/lucideblox/master/src/modules/util/icons.json")).icons
-end)
+-- === SorinHub Icons (custom) =========================================
+-- Key = short name you’ll pass in TabConfig.Icon, Value = rbxassetid
+local Icons = {
+    home   = "rbxassetid://133768243848629", -- your logo (example)
+    info   = "rbxassetid://133768243848629",
+    visual = "rbxassetid://133768243848629",
+    bypass = "rbxassetid://133768243848629",
+}
 
-if not Success then
-	warn("\nOrion Library - Failed to load Feather Icons. Error code: " .. Response .. "\n")
-end	
-]]
-
-getgenv().gethui = function() 
-  return game.CoreGui 
+getgenv().gethui = function()
+	return game.CoreGui
 end
 
-local function GetIcon(IconName)
-	if Icons[IconName] ~= nil then
-		return Icons[IconName]
-	else
-		return nil
-	end
-end   
+local function GetIcon(name)
+    -- return asset id or a safe fallback
+    return Icons[name] or "rbxassetid://10734984321"
+end
+-- ====================================================================
+
 
 local Orion = Instance.new("ScreenGui")
 Orion.Name = (getgenv()._SorinWinCfg and getgenv()._SorinWinCfg.GuiName) or "SorinUI"
@@ -395,7 +391,7 @@ function OrionLib:MakeNotification(NotificationConfig)
 		NotificationConfig.Name = NotificationConfig.Name or "Notification"
 		NotificationConfig.Content = NotificationConfig.Content or "Test"
 		NotificationConfig.Image = NotificationConfig.Image or "rbxassetid://4384403532"
-		NotificationConfig.Time = NotificationConfig.Time or 15
+		NotificationConfig.Time = NotificationConfig.Time or 10
 
 		local NotificationParent = SetProps(MakeElement("TFrame"), {
 			Size = UDim2.new(1, 0, 0, 0),
@@ -590,6 +586,17 @@ function OrionLib:MakeWindow(WindowConfig)
 		Font = Enum.Font.GothamBlack,
 		TextSize = 20
 	}), "Text")
+			-- SorinHub logo left of the title
+   local SorinLogo = SetProps(MakeElement("Image", "rbxassetid://122633020844347"), {
+	  Size = UDim2.new(0, 20, 0, 20),
+	  Position = UDim2.new(0, 5, 0, 15),
+	  BackgroundTransparency = 1
+  })
+  SorinLogo.Parent = MainWindow.TopBar
+
+-- shift title a bit right to make room for the logo
+WindowName.Position = UDim2.new(0, 30, 0, -24)
+
 
 	local WindowTopBarLine = AddThemeObject(SetProps(MakeElement("Frame"), {
 		Size = UDim2.new(1, 0, 0, 1),
@@ -728,13 +735,14 @@ function OrionLib:MakeWindow(WindowConfig)
 			Size = UDim2.new(1, 0, 0, 30),
 			Parent = TabHolder
 		}), {
-			AddThemeObject(SetProps(MakeElement("Image", TabConfig.Icon), {
-				AnchorPoint = Vector2.new(0, 0.5),
-				Size = UDim2.new(0, 18, 0, 18),
-				Position = UDim2.new(0, 10, 0.5, 0),
-				ImageTransparency = 0.4,
-				Name = "Ico"
-			}), "Text"),
+			AddThemeObject(SetProps(MakeElement("Image", GetIcon(TabConfig.Icon)), {
+	            AnchorPoint = Vector2.new(0, 0.5),
+	            Size = UDim2.new(0, 18, 0, 18),
+	            Position = UDim2.new(0, 10, 0.5, 0),
+	            ImageTransparency = 0.4,
+	            Name = "Ico"
+             }), "Text"),
+
 			AddThemeObject(SetProps(MakeElement("Label", TabConfig.Name, 14), {
 				Size = UDim2.new(1, -35, 1, 0),
 				Position = UDim2.new(0, 35, 0, 0),
