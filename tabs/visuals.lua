@@ -1,9 +1,17 @@
 -- tabs/visuals.lua
 -- Visuals / ESP for SorinHub (Orion UI)
 -- Reihenfolge (von oben nach unten): Team, DisplayName, @Username, Equipped, Distance
--- Teamfarbe färbt NUR die Team-Zeile + Skeleton.
+-- EIN Toggle für Team: zeigt Team-Namen und färbt Team-Zeile + Skeleton in Teamfarbe.
 
 return function(tab, OrionLib)
+
+    ----------------------------------------------------------------
+    -- SIMPLE SWITCH (einfach hier umstellen)
+    -- "off"    => Self-ESP immer AUS, kein Toggle sichtbar
+    -- "on"     => Self-ESP immer AN,  kein Toggle sichtbar
+    -- "toggle" => Toggle sichtbar (nur in diesem Script steuerbar)
+    local SHOW_SELF_POLICY = "off"
+    ----------------------------------------------------------------
 
     ----------------------------------------------------------------
     -- Services
@@ -25,14 +33,13 @@ return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Config / State (persisted via Flags)
     local STATE = {
-        showTeam       = false,   -- Teamzeile + Skeleton einfärben
-        showTeamName   = true,    -- Teamname anzeigen (als erste Zeile)
+        showTeam       = false,   -- EIN Schalter: Team-Name + Teamfarbe (inkl. Skeleton-Färbung)
         showName       = false,
         showUsername   = false,
         showEquipped   = false,   -- Tools-only
         showDistance   = false,
         showBones      = false,
-        showSelf       = false,
+        showSelf       = false,   -- wird unten per Policy durchgesetzt
 
         maxDistance    = 750,     -- studs
 
@@ -45,7 +52,7 @@ return function(tab, OrionLib)
         colorEquipped  = Color3.fromRGB(175,175,175),
 
         bonesColor     = Color3.fromRGB(0,200,255),
-        bonesThickness = 1.5,
+        bonesThickness = 2,
     }
 
     -- Optionale feste Teamfarben (sonst Roblox TeamColor)
@@ -62,11 +69,15 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- UI (alles OFF per Default; Flags speichern)
-    tab:AddToggle({ Name="Team color (and show team name)", Default=false, Save=true, Flag="esp_teamCheck",
-        Callback=function(v) STATE.showTeam=v end })
-    tab:AddToggle({ Name="Show team name as first line", Default=true, Save=true, Flag="esp_teamName",
-        Callback=function(v) STATE.showTeamName=v end })
+    -- UI (Flags speichern)
+    tab:AddToggle({
+        Name = "Team info (name + team color)",
+        Default = false,
+        Save = true,
+        Flag = "esp_teamInfo",
+        Callback = function(v) STATE.showTeam = v end
+    })
+
     tab:AddToggle({ Name="Show Display Name", Default=false, Save=true, Flag="esp_showName",
         Callback=function(v) STATE.showName=v end })
     tab:AddToggle({ Name="Show @Username", Default=false, Save=true, Flag="esp_showUsername",
@@ -77,8 +88,24 @@ return function(tab, OrionLib)
         Callback=function(v) STATE.showDistance=v end })
     tab:AddToggle({ Name="Show Skeleton", Default=false, Save=true, Flag="esp_showBones",
         Callback=function(v) STATE.showBones=v end })
-    tab:AddToggle({ Name="Show Self (developer)", Default=false, Save=true, Flag="esp_showSelf",
-        Callback=function(v) STATE.showSelf=v end })
+
+    -- Self-ESP je nach Policy
+    if SHOW_SELF_POLICY == "toggle" then
+        tab:AddToggle({
+            Name     = "Show Self",
+            Default  = false,
+            Save     = false,            -- absichtlich nicht persistieren
+            Flag     = "esp_showSelf",
+            Callback = function(v) STATE.showSelf = v end
+        })
+    elseif SHOW_SELF_POLICY == "on" then
+        STATE.showSelf = true
+        -- kein Toggle anzeigen
+    else -- "off"
+        STATE.showSelf = false
+        -- kein Toggle anzeigen
+    end
+
     tab:AddSlider({ Name="ESP Render Range", Min=50, Max=2500, Increment=10,
         Default=STATE.maxDistance, ValueName="studs", Save=true, Flag="esp_renderDist",
         Callback=function(v) STATE.maxDistance=v end })
@@ -197,15 +224,11 @@ return function(tab, OrionLib)
 
     ----------------------------------------------------------------
     -- Label/Stacking
-    local function isValidTarget(plr)
-        return not (plr == LocalPlayer and not STATE.showSelf)
-    end
     local function stackLine(tObj, text, baseX, baseY, yOff, color)
         if not text or text=="" then tObj.Visible=false; return yOff end
         tObj.Text = text
         tObj.Position = Vector2.new(baseX, baseY + yOff)
         if color then tObj.Color = color end
-        tObj.Size = tObj.Size -- (no-op; keeps current size)
         tObj.Outline = STATE.textOutline
         tObj.Visible = true
         return yOff + tObj.Size + STATE.lineGap
@@ -214,9 +237,18 @@ return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Render loop
     RunService.RenderStepped:Connect(function()
+        -- Policy strikt durchsetzen (verhindert manipulierte Configs)
+        if SHOW_SELF_POLICY == "off" then
+            STATE.showSelf = false
+        elseif SHOW_SELF_POLICY == "on" then
+            STATE.showSelf = true
+        end
+
         local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         for _,plr in ipairs(Players:GetPlayers()) do
-            if isValidTarget(plr) then
+            -- Lokalen Spieler nur berücksichtigen, wenn showSelf aktiv
+            local include = (plr ~= LocalPlayer) or (plr == LocalPlayer and STATE.showSelf)
+            if include then
                 local char = plr.Character
                 local hum  = char and char:FindFirstChildOfClass("Humanoid")
                 local hrp  = char and char:FindFirstChild("HumanoidRootPart")
@@ -229,9 +261,9 @@ return function(tab, OrionLib)
                             local x, y = pos.X, pos.Y
                             local yOff = 0
 
-                            -- Team (nur diese Zeile farbig)
+                            -- Team-Zeile (farbig, wenn aktiv)
                             local teamCol = STATE.showTeam and colorForTeam(plr) or nil
-                            if STATE.showTeam and STATE.showTeamName and plr.Team then
+                            if STATE.showTeam and plr.Team then
                                 yOff = stackLine(obj.textTeam, plr.Team.Name, x, y, yOff, teamCol or STATE.colorText)
                             else
                                 obj.textTeam.Visible = false
@@ -258,7 +290,7 @@ return function(tab, OrionLib)
                                 yOff = stackLine(obj.textDist, dTxt, x, y, yOff, STATE.colorText)
                             else obj.textDist.Visible=false end
 
-                            -- Skeleton (teamfarben-Override nur hier)
+                            -- Skeleton (Teamfarbe, wenn Team aktiv)
                             if STATE.showBones then
                                 drawSkeleton(obj, char, teamCol or nil)
                             else
