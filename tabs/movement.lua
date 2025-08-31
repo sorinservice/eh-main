@@ -2,7 +2,7 @@
 -- SorinHub - Movement Tab (refined slide-speed + jump-only escape)
 
 return function(tab, OrionLib)
-    print("movement_test")
+    print("movement_test_v2_fixed")
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
@@ -10,6 +10,7 @@ return function(tab, OrionLib)
 
     local LP = Players.LocalPlayer
 
+    -- connection helpers
     local CONNS = {}
     local function on(sig, fn, bucket)
         local c = sig:Connect(fn)
@@ -20,7 +21,12 @@ return function(tab, OrionLib)
         for _,c in ipairs(list) do pcall(function() c:Disconnect() end) end
         table.clear(list)
     end
+    local function safeDisconnect(conn)
+        if conn then pcall(function() conn:Disconnect() end) end
+        return nil
+    end
 
+    -- common getters
     local function getHumanoid(ch)
         ch = ch or LP.Character
         return ch and ch:FindFirstChildOfClass("Humanoid")
@@ -32,15 +38,8 @@ return function(tab, OrionLib)
 
     ----------------------------------------------------------------
     -- Slide-Speed (grounded, MoveDirection-based, speed-capped)
-    local SLIDE = {
-        enabled    = false,
-        multiplier = 1.2,  -- default boost
-        conn       = nil,
-        toggleObj  = nil,
-    }
 
     local function isOnGround(h)
-        -- Quick ground check via state or floor material
         if not h then return false end
         local st = h:GetState()
         if st == Enum.HumanoidStateType.Running or st == Enum.HumanoidStateType.RunningNoPhysics then
@@ -49,19 +48,27 @@ return function(tab, OrionLib)
         return h.FloorMaterial and h.FloorMaterial ~= Enum.Material.Air
     end
 
+    local SLIDE = {
+        enabled    = false,
+        multiplier = 1.2,
+        conn       = nil,
+        toggleObj  = nil,
+    }
+
     local function startSlide()
         if SLIDE.enabled then return end
         SLIDE.enabled = true
 
-        -- Prepare raycast params once
+        -- ensure no stale connection remains
+        SLIDE.conn = safeDisconnect(SLIDE.conn)
+
         local rayParams = RaycastParams.new()
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
         SLIDE.conn = on(RunService.RenderStepped, function(dt)
             if not SLIDE.enabled then return end
-            local h   = getHumanoid()
-            local r   = getHRP()
-            local ch  = LP.Character
+
+            local h, r, ch = getHumanoid(), getHRP(), LP.Character
             if not (h and r and ch) then return end
             if h.Sit or not isOnGround(h) then return end
 
@@ -69,43 +76,42 @@ return function(tab, OrionLib)
             if moveDir.Magnitude <= 0.01 then return end
             moveDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
 
-            -- Target speed vs current horizontal velocity
             local base       = (h.WalkSpeed and h.WalkSpeed > 0) and h.WalkSpeed or 16
             local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 2.0)
             local target     = base * multiplier
 
             local vel        = r.AssemblyLinearVelocity
             local curHorz    = Vector3.new(vel.X, 0, vel.Z).Magnitude
-
             if curHorz >= target - 0.05 then return end
 
-            -- Extra distance for this frame (soft catch-up)
             local deficit    = target - curHorz
-            local extra      = math.clamp(deficit * dt, 0, 3.0 * dt) -- cap per-frame push
-
+            local extra      = math.clamp(deficit * dt, 0, 3.0 * dt)
             if extra <= 0 then return end
 
-            -- Simple anti-clip: raycast ahead by the extra step, skip if wall
+            -- simple anti-clip check forward
             rayParams.FilterDescendantsInstances = { ch }
             local origin    = r.Position
-            local direction = moveDir * (extra + 0.2) -- small safety margin
+            local direction = moveDir * (extra + 0.2)
             local hit       = Workspace:Raycast(origin, direction, rayParams)
             if hit and hit.Instance and hit.Instance.CanCollide ~= false then
-                return -- obstacle in the way; do not push
+                return
             end
 
-            -- Apply extra displacement on XZ plane only
+            -- nudge on XZ plane
             r.CFrame = r.CFrame + (moveDir * extra)
         end, CONNS)
     end
 
     local function stopSlide()
         SLIDE.enabled = false
+        SLIDE.conn = safeDisconnect(SLIDE.conn) -- crucial to avoid stacking
     end
 
     ----------------------------------------------------------------
-    -- Noclip (unchanged)
+    -- Noclip
+
     local NC = { enabled = false, conn = nil }
+
     local function setPartsCollide(ch, collide)
         if not ch then return end
         for _,d in ipairs(ch:GetDescendants()) do
@@ -114,30 +120,37 @@ return function(tab, OrionLib)
             end
         end
     end
+
     local function startNoclip()
         if NC.enabled then return end
         NC.enabled = true
+
+        NC.conn = safeDisconnect(NC.conn)
+
         local ch = LP.Character
         if ch then setPartsCollide(ch, false) end
+
         NC.conn = on(RunService.Heartbeat, function()
             if not NC.enabled then return end
             local ch2 = LP.Character
             if ch2 then setPartsCollide(ch2, false) end
         end, CONNS)
     end
+
     local function stopNoclip()
         NC.enabled = false
+        NC.conn = safeDisconnect(NC.conn) -- prevent stacking + save perf
         local ch = LP.Character
         if ch then setPartsCollide(ch, true) end
     end
 
     ----------------------------------------------------------------
     -- Escape Vehicle (jump-only)
+
     local function escapeVehicleJumpOnly()
         local h = getHumanoid()
         if not h then return end
         pcall(function() h.Sit = false end)
-        -- short jump pulse
         task.defer(function()
             pcall(function() h.Jump = true end)
         end)
@@ -145,6 +158,7 @@ return function(tab, OrionLib)
 
     ----------------------------------------------------------------
     -- UI
+
     tab:AddSection({Name = "Movement"})
     SLIDE.toggleObj = tab:AddToggle({
         Name = "Slide Speed (grounded)",
@@ -156,7 +170,9 @@ return function(tab, OrionLib)
         Min = 0.8, Max = 2.0, Increment = 0.05,
         Default = 1.2, ValueName = "x",
         Save = true, Flag = "mv_slide_mult",
-        Callback = function(v) SLIDE.multiplier = v end
+        Callback = function(v)
+            SLIDE.multiplier = v
+        end
     })
     tab:AddBind({
         Name = "Toggle Slide (T)",
@@ -190,10 +206,19 @@ return function(tab, OrionLib)
 
     ----------------------------------------------------------------
     -- Respawn housekeeping
+
     on(LP.CharacterAdded, function()
         if NC.enabled then
             local ch = LP.Character
             task.defer(function() if ch then setPartsCollide(ch, false) end end)
         end
     end, CONNS)
+
+    -- optional: clean-up hook if you have an unload
+    -- (uncomment when you integrate a global Unload event)
+    -- on(SomeUnloadSignal, function()
+    --     stopSlide()
+    --     stopNoclip()
+    --     disconnectAll(CONNS)
+    -- end)
 end
