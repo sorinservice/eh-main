@@ -1,16 +1,13 @@
 -- tabs/movement.lua
--- SorinHub - Movement Tab (slide-speed + soft escape)
--- Changes vs old version:
---  - Speed: adds extra ground distance per frame (keeps animations, no WalkSpeed enforcement)
---  - Escape Vehicle: uses Jump + small upward nudge (no weld/motor destruction)
+-- SorinHub - Movement Tab (refined slide-speed + jump-only escape)
 
 return function(tab, OrionLib)
-    ----------------------------------------------------------------
-    -- Services / locals
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
-    local LP           = Players.LocalPlayer
+    local Workspace    = game:GetService("Workspace")
+
+    local LP = Players.LocalPlayer
 
     local CONNS = {}
     local function on(sig, fn, bucket)
@@ -22,70 +19,82 @@ return function(tab, OrionLib)
         for _,c in ipairs(list) do pcall(function() c:Disconnect() end) end
         table.clear(list)
     end
-    local function hum(char)
-        char = char or LP.Character
-        return char and char:FindFirstChildOfClass("Humanoid")
+
+    local function getHumanoid(ch)
+        ch = ch or LP.Character
+        return ch and ch:FindFirstChildOfClass("Humanoid")
     end
-    local function hrp(char)
-        char = char or LP.Character
-        return char and char:FindFirstChild("HumanoidRootPart")
+    local function getHRP(ch)
+        ch = ch or LP.Character
+        return ch and ch:FindFirstChild("HumanoidRootPart")
     end
 
     ----------------------------------------------------------------
-    -- Slide-Speed (does NOT touch Humanoid.WalkSpeed)
-    -- Idea: when the player is moving, add a small extra displacement along the move direction.
-    -- Result: looks like normal walking (anims intact) but covers more ground ("slide").
+    -- Slide-Speed (grounded, MoveDirection-based, speed-capped)
     local SLIDE = {
-        enabled   = false,
-        multiplier= 1.0,   -- 1.0 = normal (no boost). 0.1..3.0 allowed
-        conn      = nil,
-        keybind   = Enum.KeyCode.T,
-        toggleObj = nil,
+        enabled    = false,
+        multiplier = 1.2,  -- default boost
+        conn       = nil,
+        toggleObj  = nil,
     }
+
+    local function isOnGround(h)
+        -- Quick ground check via state or floor material
+        if not h then return false end
+        local st = h:GetState()
+        if st == Enum.HumanoidStateType.Running or st == Enum.HumanoidStateType.RunningNoPhysics then
+            return true
+        end
+        return h.FloorMaterial and h.FloorMaterial ~= Enum.Material.Air
+    end
 
     local function startSlide()
         if SLIDE.enabled then return end
         SLIDE.enabled = true
 
-        -- Per-frame extra displacement if player is moving on ground.
+        -- Prepare raycast params once
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
         SLIDE.conn = on(RunService.RenderStepped, function(dt)
             if not SLIDE.enabled then return end
-            local h = hum(); local root = hrp()
-            local cam = workspace.CurrentCamera
-            if not (h and root and cam) then return end
+            local h   = getHumanoid()
+            local r   = getHRP()
+            local ch  = LP.Character
+            if not (h and r and ch) then return end
+            if h.Sit or not isOnGround(h) then return end
 
-            -- Only apply when player intends to move: either WASD pressed or MoveDirection present.
             local moveDir = h.MoveDirection
-            local hasInput =
-                UserInput:IsKeyDown(Enum.KeyCode.W)
-                or UserInput:IsKeyDown(Enum.KeyCode.A)
-                or UserInput:IsKeyDown(Enum.KeyCode.S)
-                or UserInput:IsKeyDown(Enum.KeyCode.D)
+            if moveDir.Magnitude <= 0.01 then return end
+            moveDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
 
-            if (not hasInput) and (moveDir.Magnitude <= 0) then
-                return
+            -- Target speed vs current horizontal velocity
+            local base       = (h.WalkSpeed and h.WalkSpeed > 0) and h.WalkSpeed or 16
+            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 2.0)
+            local target     = base * multiplier
+
+            local vel        = r.AssemblyLinearVelocity
+            local curHorz    = Vector3.new(vel.X, 0, vel.Z).Magnitude
+
+            if curHorz >= target - 0.05 then return end
+
+            -- Extra distance for this frame (soft catch-up)
+            local deficit    = target - curHorz
+            local extra      = math.clamp(deficit * dt, 0, 3.0 * dt) -- cap per-frame push
+
+            if extra <= 0 then return end
+
+            -- Simple anti-clip: raycast ahead by the extra step, skip if wall
+            rayParams.FilterDescendantsInstances = { ch }
+            local origin    = r.Position
+            local direction = moveDir * (extra + 0.2) -- small safety margin
+            local hit       = Workspace:Raycast(origin, direction, rayParams)
+            if hit and hit.Instance and hit.Instance.CanCollide ~= false then
+                return -- obstacle in the way; do not push
             end
 
-            -- Constrain to XZ plane; animations remain the same.
-            if moveDir.Magnitude > 0 then
-                moveDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
-            else
-                -- Fallback: infer from camera if MoveDirection is zero but keys are down
-                local look = cam.CFrame.LookVector
-                moveDir = Vector3.new(look.X, 0, look.Z).Unit
-            end
-
-            -- Compute extra distance: (multiplier - 1) * baseSpeed * dt
-            -- Use current humanoid WalkSpeed as the "base", but do NOT set it.
-            local base = h.WalkSpeed or 16
-            local extraFactor = math.clamp((SLIDE.multiplier or 1.0) - 1.0, -0.9, 2.0)
-            if math.abs(extraFactor) < 1e-3 then return end
-
-            local extra = base * extraFactor * dt
-            if extra ~= 0 then
-                -- Keep Y the same to avoid fake jumps; tiny tilt corrections are okay.
-                root.CFrame = root.CFrame + (moveDir * extra)
-            end
+            -- Apply extra displacement on XZ plane only
+            r.CFrame = r.CFrame + (moveDir * extra)
         end, CONNS)
     end
 
@@ -94,26 +103,11 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- Jump modifier (kept; harmless if used within safe range)
-    local JM = { value = 50 }
-    local function setJump(v)
-        JM.value = math.clamp(v or JM.value, 0, 50)
-        local h = hum()
-        if not h then return end
-        local okUse = (h.UseJumpPower == nil) or (h.UseJumpPower == true)
-        if h.JumpPower ~= nil and okUse then
-            h.JumpPower = JM.value
-        elseif h.JumpHeight ~= nil then
-            h.JumpHeight = JM.value * (7.2/50)
-        end
-    end
-
-    ----------------------------------------------------------------
-    -- Noclip (unchanged; toggles character parts collision)
+    -- Noclip (unchanged)
     local NC = { enabled = false, conn = nil }
-    local function setPartsCollide(char, collide)
-        if not char then return end
-        for _,d in ipairs(char:GetDescendants()) do
+    local function setPartsCollide(ch, collide)
+        if not ch then return end
+        for _,d in ipairs(ch:GetDescendants()) do
             if d:IsA("BasePart") then
                 pcall(function() d.CanCollide = collide end)
             end
@@ -137,52 +131,32 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- Soft Escape Vehicle (no weld/motor destruction)
-    -- Strategy:
-    --  1) Try to unsit (Humanoid.Sit=false)
-    --  2) Force a Jump pulse
-    --  3) Nudge HRP slightly upward and clear velocities
-    local function softEscapeVehicle()
-        local ch = LP.Character; local h = hum(ch); local root = hrp(ch)
-        if not (ch and h and root) then return end
-
-        -- Attempt to unsit & jump
+    -- Escape Vehicle (jump-only)
+    local function escapeVehicleJumpOnly()
+        local h = getHumanoid()
+        if not h then return end
         pcall(function() h.Sit = false end)
-        task.delay(0.02, function()
+        -- short jump pulse
+        task.defer(function()
             pcall(function() h.Jump = true end)
         end)
-
-        -- Small upward nudge to avoid instant reseat
-        root.CFrame = root.CFrame + Vector3.new(0, 2.25, 0)
-
-        -- Clear residual velocities to stabilize
-        pcall(function() root.AssemblyLinearVelocity = Vector3.new() end)
-        pcall(function() root.AssemblyAngularVelocity = Vector3.new() end)
     end
-
-    ----------------------------------------------------------------
-    -- (Optional) Fly is intentionally omitted here to reduce hard flags.
-    -- If you still want it, keep it in a separate tab/build for testing.
 
     ----------------------------------------------------------------
     -- UI
     tab:AddSection({Name = "Movement"})
     SLIDE.toggleObj = tab:AddToggle({
-        Name = "Slide Speed (no WalkSpeed edit)",
+        Name = "Slide Speed (grounded)",
         Default = false, Save = true, Flag = "mv_slide_on",
-        Callback = function(v)
-            if v then startSlide() else stopSlide() end
-        end
+        Callback = function(v) if v then startSlide() else stopSlide() end end
     })
-
     tab:AddSlider({
         Name = "Slide Multiplier",
-        Min = 0.1, Max = 3.0, Increment = 0.05,
-        Default = 1.0, ValueName = "x",
+        Min = 0.8, Max = 2.0, Increment = 0.05,
+        Default = 1.2, ValueName = "x",
         Save = true, Flag = "mv_slide_mult",
         Callback = function(v) SLIDE.multiplier = v end
     })
-
     tab:AddBind({
         Name = "Toggle Slide (T)",
         Default = Enum.KeyCode.T, Hold = false,
@@ -194,46 +168,31 @@ return function(tab, OrionLib)
         end
     })
 
-    tab:AddSection({Name = "Jump"})
-    tab:AddSlider({
-        Name = "Jump Modifier",
-        Min = 0, Max = 50, Increment = 1,
-        Default = 50, ValueName = "power/height",
-        Save = true, Flag = "mv_jump_val",
-        Callback = function(v) setJump(v) end
-    })
-
     tab:AddSection({Name = "Collision"})
     tab:AddToggle({
         Name = "Noclip (no collisions)",
         Default = false, Save = true, Flag = "mv_noclip_on",
-        Callback = function(v)
-            if v then startNoclip() else stopNoclip() end
-        end
+        Callback = function(v) if v then startNoclip() else stopNoclip() end end
     })
 
     tab:AddSection({Name = "Vehicle"})
     tab:AddButton({
-        Name = "Escape Vehicle (soft)",
-        Callback = function() softEscapeVehicle() end
+        Name = "Escape Vehicle (jump)",
+        Callback = function() escapeVehicleJumpOnly() end
     })
     tab:AddBind({
         Name = "Escape Vehicle Bind (G)",
         Default = Enum.KeyCode.G, Hold = false,
         Save = true, Flag = "mv_escape_bind",
-        Callback = function() softEscapeVehicle() end
+        Callback = function() escapeVehicleJumpOnly() end
     })
 
     ----------------------------------------------------------------
-    -- Respawn handling: only apply jump value when user changed it
+    -- Respawn housekeeping
     on(LP.CharacterAdded, function()
-        -- Re-apply jump setting if user saved a non-default
-        task.defer(function() setJump(JM.value) end)
-        -- Noclip re-apply if enabled
         if NC.enabled then
             local ch = LP.Character
             task.defer(function() if ch then setPartsCollide(ch, false) end end)
         end
-        -- Slide: nothing to do; it only acts while enabled per-frame
     end, CONNS)
 end
