@@ -10,3 +10,4 @@ return function(tab, OrionLib)
     tab:AddParagraph(
         "Join our Discord"
     )
+end
