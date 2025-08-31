@@ -13,9 +13,9 @@ local Window = OrionLib:MakeWindow({
 local TABS = {
     Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
     ESPs = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
+    Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/heads/dev/tabs/graphics.lua",
     Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
-    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
-    Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/heads/dev/tabs/graphics.lua"
+    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua"
 }
 
 -- Loader-Helfer
@@ -51,9 +51,9 @@ end
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,    "main")
 attachTab("ESPs", TABS.ESPs, "main")
+attachTab("Graphics", TABS.Graphics, "main")
 attachTab("Bypass",  TABS.Bypass,  "main")
 attachTab("Misc", TABS.Misc, "main")
-attachTab("Graphics", TABS.Graphics, "main")
 
 -- UI starten
 OrionLib:Init()
