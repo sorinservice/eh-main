@@ -212,7 +212,7 @@ end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,    "info")
-attachTab("ESPs", TABS.Visuals, "main")
+attachTab("ESPs", TABS.ESPs, "main")
 attachTab("Bypass",  TABS.Bypass,  "main")
 attachTab("Utility", TABS.Utility, "main")
 
