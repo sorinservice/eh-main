@@ -14,7 +14,7 @@ local TABS = {
     Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
     ESPs = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
     Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
-    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
+    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua"
 }
 
 -- Loader-Helfer
@@ -43,7 +43,7 @@ local function attachTab(name, url, iconKey)
     end
     local ok, msg = pcall(mod, Tab, OrionLib)
     if not ok then
-        Tab:AddParagraph("Fehler", "Tab-Init fehlgeschlagen:\n"
+        Tab:AddParagraph("Fehler", "Tab-Init fehlgeschlagen:\n" .. tostring(msg))
     end
 end
 
