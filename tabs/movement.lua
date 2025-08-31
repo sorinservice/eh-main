@@ -2,7 +2,7 @@
 -- SorinHub - Movement Tab (refined slide-speed + jump-only escape)
 
 return function(tab, OrionLib)
-    print("movement_test_v2_fixed")
+    print("movement_test_v2.2_fixed")
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
@@ -77,7 +77,7 @@ return function(tab, OrionLib)
             moveDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
 
             local base       = (h.WalkSpeed and h.WalkSpeed > 0) and h.WalkSpeed or 16
-            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 2.0)
+            local multiplier = math.clamp(SLIDE.multiplier or 1.0, 0.8, 15.0)
             local target     = base * multiplier
 
             local vel        = r.AssemblyLinearVelocity
@@ -167,7 +167,7 @@ return function(tab, OrionLib)
     })
     tab:AddSlider({
         Name = "Slide Multiplier",
-        Min = 0.8, Max = 2.0, Increment = 0.05,
+        Min = 0.1, Max = 15.0, Increment = 0.05,
         Default = 1.2, ValueName = "x",
         Save = true, Flag = "mv_slide_mult",
         Callback = function(v)
