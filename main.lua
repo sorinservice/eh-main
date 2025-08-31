@@ -11,10 +11,10 @@ local Window = OrionLib:MakeWindow({
 
 -- Tabs-Mapping
 local TABS = {
-    Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/info.lua",
-    Visuals = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/visuals.lua",
-    Bypass = "https://raw.githubusercontent.com/sorinservice/eh-main//main/tabs/bypass.lua",
-    Utility = "https://raw.githubusercontent.com/sorinservice/eh-main//main/tabs/utility.lua"
+    Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
+    Visuals = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
+    Bypass = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
+    Utility = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/utility.lua"
 }
 
 -- Loader-Helfer
