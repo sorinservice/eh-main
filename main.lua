@@ -48,10 +48,10 @@ local function attachTab(name, url)
 end
 
 -- Tabs laden (Reihenfolge = Anzeige-Reihenfolge)
-attachTab("Info",    TABS.Info)
-attachTab("Visuals", TABS.Visuals)
-attachTab("Bypass",  TABS.Bypass)
-attachTab("Utility", TABS.Utility)
+attachTab("Info",    TABS.Info,    "info")
+attachTab("Visuals", TABS.Visuals, "visual")
+attachTab("Bypass",  TABS.Bypass,  "bypass")
+attachTab("Utility", TABS.Utility, "utility")
 
 -- UI starten
 OrionLib:Init()
