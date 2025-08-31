@@ -14,7 +14,8 @@ local TABS = {
     Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
     ESPs = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
     Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
-    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua"
+    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
+    Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/graphics.lua"
 }
 
 -- Loader-Helfer
@@ -48,10 +49,11 @@ local function attachTab(name, url, iconKey)
 end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
-attachTab("Info",    TABS.Info,    "info")
-attachTab("ESPs", TABS.ESPs, "visual")
-attachTab("Bypass",  TABS.Bypass,  "bypass")
-attachTab("Misc", TABS.Misc, "utility")
+attachTab("Info",    TABS.Info,    "main")
+attachTab("ESPs", TABS.ESPs, "main")
+attachTab("Bypass",  TABS.Bypass,  "main")
+attachTab("Misc", TABS.Misc, "main")
+attachTab("Graphics, TABS.Graphics", "main")
 
 -- UI starten
 OrionLib:Init()
