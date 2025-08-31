@@ -2,15 +2,10 @@
   SorinHub Developer - gated main
   - Device/User whitelist (client-side)
   - Discord webhook logging (ALLOWED/DENIED/INFO)
-  - Loads Orion + tabs only if allowed
-
-  NOTE: Keep this file private. Webhook = secret; rotate if leaked.
-  All comments are in English as requested.
-]]
+  - Loads Orion + tabs only if allowed]]
 
 ----------------------------------------------------------------------
 -- Webhook + whitelist preamble
-----------------------------------------------------------------------
 
 local HttpService  = game:GetService("HttpService")
 local Players      = game:GetService("Players")
@@ -175,7 +170,7 @@ local Window = OrionLib:MakeWindow({
 -- Tabs-Mapping (DEV-Branch)
 local TABS = {
     Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/info.lua",
-    ESPs = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/visuals.lua",
+    ESPs    = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/visuals.lua",
     Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/bypass.lua",
     Utility = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/utility.lua"
 }
@@ -212,7 +207,7 @@ end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,    "info")
-attachTab("ESPs", TABS.ESPs, "main")
+attachTab("ESPs", TABS.ESPs,       "main")
 attachTab("Bypass",  TABS.Bypass,  "main")
 attachTab("Utility", TABS.Utility, "main")
 
