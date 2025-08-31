@@ -389,7 +389,7 @@ function OrionLib:MakeNotification(NotificationConfig)
 	spawn(function()
 		NotificationConfig.Name = NotificationConfig.Name or "Notification"
 		NotificationConfig.Content = NotificationConfig.Content or "Test"
-		NotificationConfig.Image = NotificationConfig.Image or "rbxassetid://4384403532"
+		NotificationConfig.Image = NotificationConfig.Image or "rbxassetid://87052561483042"
 		NotificationConfig.Time = NotificationConfig.Time or 10
 
 		local NotificationParent = SetProps(MakeElement("TFrame"), {
