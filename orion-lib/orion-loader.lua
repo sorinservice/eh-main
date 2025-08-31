@@ -28,11 +28,11 @@ local OrionLib = {
 -- === SorinHub Icons (custom) =========================================
 -- Key = short name you’ll pass in TabConfig.Icon, Value = rbxassetid
 local Icons = {
-	home    = "rbxassetid://133768243848629", -- example
+	home    = "rbxassetid://133768243848629",
 	info    = "rbxassetid://133768243848629",
 	visual  = "rbxassetid://133768243848629",
 	bypass  = "rbxassetid://133768243848629",
-	utility = "rbxassetid://133768243848629", -- hinzugefügt
+	utility = "rbxassetid://133768243848629",
 }
 
 getgenv().gethui = function()
@@ -46,7 +46,7 @@ end
 -- ====================================================================
 
 local Orion = Instance.new("ScreenGui")
-Orion.Name = (getgenv()._SorinWinCfg and getgenv()._SorinWinCfg.GuiName) or "SorinUI"
+Orion.Name = (getgenv()._SorinWinCfg and getgenv()._SorinWinCfg.GuiName) or "SorinHub"
 if syn then
 	syn.protect_gui(Orion)
 	Orion.Parent = game.CoreGui
@@ -462,18 +462,18 @@ function OrionLib:MakeWindow(WindowConfig)
 	local UIHidden = false
 
 	WindowConfig = WindowConfig or {}
-	WindowConfig.Name = WindowConfig.Name or "Orion Library"
+	WindowConfig.Name = WindowConfig.Name or "SorinHub"
 	WindowConfig.ConfigFolder = WindowConfig.ConfigFolder or WindowConfig.Name
 	WindowConfig.SaveConfig = WindowConfig.SaveConfig or false
 	WindowConfig.HidePremium = WindowConfig.HidePremium or false
 	if WindowConfig.IntroEnabled == nil then
 		WindowConfig.IntroEnabled = true
 	end
-	WindowConfig.IntroText = WindowConfig.IntroText or "Orion Library"
+	WindowConfig.IntroText = WindowConfig.IntroText or "Loading SorinHub"
 	WindowConfig.CloseCallback = WindowConfig.CloseCallback or function() end
 	WindowConfig.ShowIcon = WindowConfig.ShowIcon or false
 	WindowConfig.Icon = WindowConfig.Icon or "rbxassetid://8834748103"
-	WindowConfig.IntroIcon = WindowConfig.IntroIcon or "rbxassetid://8834748103"
+	WindowConfig.IntroIcon = WindowConfig.IntroIcon or "rbxassetid://122633020844347"
 	OrionLib.Folder = WindowConfig.ConfigFolder
 	OrionLib.SaveCfg = WindowConfig.SaveConfig
 
