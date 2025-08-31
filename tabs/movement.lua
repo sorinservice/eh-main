@@ -174,12 +174,12 @@ return function(tab, OrionLib)
     -- Multiplier slider (robust & consistent with runtime clamp)
     tab:AddSlider({
         Name = "Slide Multiplier",
-        Min = 1.0, Max = 5.0, Increment = 0.05,
+        Min = 0.1, Max = 1.0, Increment = 0.05,
         Default = 1.1, ValueName = "x",
         Save = true, Flag = "mv_slide_mult",
         Callback = function(v)
             v = tonumber(v) or SLIDE.multiplier
-            SLIDE.multiplier = math.clamp(v, 0.8, 3.0)
+            SLIDE.multiplier = math.clamp(v, 0.8, 5.0)
             -- print("[Slide] multiplier =", SLIDE.multiplier)
         end
     })
