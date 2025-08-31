@@ -1,48 +1,164 @@
--- ==== SorinHub Dev: Device Lock (ClientId whitelist) ===================
-local Players = game:GetService("Players")
-local Analytics = game:GetService("RbxAnalyticsService")
+--[[ 
+  SorinHub Developer - gated main
+  - Device/User whitelist (client-side)
+  - Discord webhook logging (ALLOWED/DENIED/INFO)
+  - Loads Orion + tabs only if allowed
 
--- 1) Deine freigegebenen Geräte-IDs hier eintragen:
-local ALLOWED = {
-    ["6C177D2C-C6B5-4A82-AC34-456227C0C8DE"] = true,
-    -- weitere ...
+  NOTE: Keep this file private. Webhook = secret; rotate if leaked.
+  All comments are in English as requested.
+]]
+
+----------------------------------------------------------------------
+-- Webhook + whitelist preamble
+----------------------------------------------------------------------
+
+local HttpService  = game:GetService("HttpService")
+local Players      = game:GetService("Players")
+local Analytics    = game:GetService("RbxAnalyticsService")
+local LP           = Players.LocalPlayer
+
+-- ====== CONFIG ======
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1411729741630800014/ZTYMR3Cd5Kxvme6sDlOXdaeFB2WWjTsHjSAtg8g-hEXZJEQ5lKdls_VDywBlYBcNikRz"
+
+-- Allow-lists (edit these)
+local ALLOW_CLIENT_IDS = {
+    -- put client ids here (exact strings)
+    ["6C177D2C-C6B5-4A82-AC34-456227C0C7DE"] = true,
+}
+local ALLOW_USER_IDS = {
+    -- put numeric user ids here
+    -- [123456789] = true,
 }
 
--- Optional: Dev-Bypass, z.B. für dich bei Tests (per getgenv() setzen)
-local DEV_BYPASS = (getgenv and getgenv().SorinDevBypass) == true
+-- ====== low-level request wrapper (executor-friendly) ======
+local function rawRequest(opts)
+    local req = (syn and syn.request) or (http and http.request) or http_request or request
+    if req then
+        return req({
+            Url = opts.Url,
+            Method = opts.Method or "POST",
+            Headers = opts.Headers or { ["Content-Type"] = "application/json" },
+            Body = opts.Body or ""
+        })
+    else
+        -- Fallback (usually blocked for discord.com, but harmless to try)
+        local ok, body = pcall(function()
+            return HttpService:PostAsync(opts.Url, opts.Body or "", Enum.HttpContentType.ApplicationJson)
+        end)
+        return { Success = ok, StatusCode = ok and 200 or 0, Body = body or "" }
+    end
+end
 
+-- ====== helpers ======
 local function getClientIdSafe()
     local ok, id = pcall(function() return Analytics:GetClientId() end)
-    return ok and tostring(id) or nil
+    return ok and tostring(id) or "unavailable"
 end
 
+local function getExecutorName()
+    if identifyexecutor then
+        local ok, name = pcall(identifyexecutor)
+        if ok and type(name) == "string" then return name end
+    end
+    if syn then return "Synapse" end
+    if KRNL_LOADED then return "KRNL" end
+    if is_sirhurt_closure then return "SirHurt" end
+    if secure_load then return "Sentinel" end
+    return "Unknown"
+end
+
+local function sendLog(payload)
+    if type(WEBHOOK_URL) ~= "string" or WEBHOOK_URL == "" then return end
+    payload = payload or {}
+
+    local nowISO = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    local cid    = getClientIdSafe()
+    local exec   = getExecutorName()
+
+    local place  = tostring(game.PlaceId or "N/A")
+    local jobId  = tostring(game.JobId or "")
+    local pvtId  = tostring(game.PrivateServerId or "")
+    local pvtOwn = tostring(game.PrivateServerOwnerId or "")
+
+    local fields = {
+        { name = "User",        value = string.format("%s (@%s)", LP.DisplayName or LP.Name, LP.Name), inline = true },
+        { name = "UserId",      value = tostring(LP.UserId), inline = true },
+        { name = "AccountAge",  value = tostring(LP.AccountAge or 0).." days", inline = true },
+        { name = "ClientId",    value = "``"..cid.."``", inline = false },
+        { name = "Executor",    value = exec, inline = true },
+        { name = "PlaceId",     value = place, inline = true },
+        { name = "JobId",       value = (jobId ~= "" and ("``"..jobId.."``") or "N/A"), inline = false },
+        { name = "PrivateServerId", value = (pvtId ~= "" and ("``"..pvtId.."``") or "N/A"), inline = true },
+        { name = "PrivateServerOwnerId", value = (pvtOwn ~= "" and pvtOwn or "N/A"), inline = true },
+        { name = "Timestamp",   value = nowISO, inline = true },
+    }
+
+    if type(payload.fields) == "table" then
+        for _,f in ipairs(payload.fields) do table.insert(fields, f) end
+    end
+
+    local color = 0x5865F2
+    if payload.status == "ALLOWED" then color = 0x57F287
+    elseif payload.status == "DENIED" then color = 0xED4245
+    elseif payload.status == "INFO" then color = 0x3498DB end
+
+    local body = HttpService:JSONEncode({
+        username = string.format("SorinHub | %s", payload.status or "LOG"),
+        embeds = {{
+            title       = payload.title or "SorinHub Log",
+            description = payload.description or "",
+            color       = color,
+            fields      = fields,
+            footer      = { text = "SorinHub Dev" },
+            timestamp   = nowISO,
+        }}
+    })
+
+    local res = rawRequest({
+        Url = WEBHOOK_URL,
+        Method = "POST",
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = body
+    })
+    if not (res and (res.Success or (res.StatusCode and res.StatusCode < 400))) then
+        warn("[SorinHub] Webhook failed:", res and res.StatusCode, res and res.Body)
+    end
+end
+
+-- ====== whitelist check ======
 local function isWhitelisted()
-    if DEV_BYPASS then return true, "dev-bypass" end
-    local id = getClientIdSafe()
-    if not id then return false, "no-id" end
-    return ALLOWED[id] == true, id
+    local cid = getClientIdSafe()
+    if ALLOW_CLIENT_IDS[cid] then
+        return true, "clientId"
+    end
+    if ALLOW_USER_IDS[LP.UserId] then
+        return true, "userId"
+    end
+    return false, "not in allow-list"
 end
 
-local ok, detail = isWhitelisted()
-if not ok then
-    warn(("[SorinHub] Access denied: %s"):format(tostring(detail)))
-    -- Harte Reaktion: Kicken und sofort beenden
+-- Gate now
+local allowed, reason = isWhitelisted()
+if allowed then
+    sendLog({
+        title = "Device check passed",
+        status = "ALLOWED",
+        description = "Developer build launched.",
+        fields = { { name = "Matched By", value = reason, inline = true } }
+    })
+else
+    sendLog({
+        title = "Device check failed",
+        status = "DENIED",
+        description = "Unauthorized device tried to launch Dev build.",
+        fields = { { name = "Reason", value = reason, inline = true } }
+    })
+    task.wait(0.2)
     pcall(function()
-        Players.LocalPlayer:Kick("SorinHub Developer: This device is not authorized.")
+        LP:Kick("SorinHub: This device is not authorized. Your Information are logged for Saftey")
     end)
     return
 end
-
--- (Optional) Light Anti-Tamper: später nochmal prüfen und beenden, falls „entsichert“
-task.delay(5, function()
-    local ok2 = select(1, isWhitelisted())
-    if not ok2 then
-        pcall(function()
-            Players.LocalPlayer:Kick("SorinHub Developer: Device check failed.")
-        end)
-    end
-end)
--- ======================================================================
 
 
 -- Orion laden
