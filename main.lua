@@ -212,9 +212,9 @@ end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,    "info")
-attachTab("ESPs", TABS.Visuals, "visual")
-attachTab("Bypass",  TABS.Bypass,  "bypass")
-attachTab("Utility", TABS.Utility, "utility")
+attachTab("ESPs", TABS.Visuals, "main")
+attachTab("Bypass",  TABS.Bypass,  "main")
+attachTab("Utility", TABS.Utility, "main")
 
 -- UI starten
 OrionLib:Init()
