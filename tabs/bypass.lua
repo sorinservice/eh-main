@@ -1,9 +1,8 @@
 -- tabs/bypass.lua
--- VoiceChat helpers + Freecam arming (Shift+P). Tries Roblox's built-in Freecam if accessible; falls back to custom.
+-- VoiceChat helpers + Freecam arming (Shift+P). No Roblox-mod probing; stable custom freecam.
 -- UI text & comments in English.
 
 return function(tab, OrionLib)
-    print("bypass loaded version: 1")
     ----------------------------------------------------------------
     -- Services
     local Players               = game:GetService("Players")
@@ -89,66 +88,25 @@ return function(tab, OrionLib)
 
     ----------------------------------------------------------------
     -- =========================== Freecam =========================
-    -- Goal: Arm via UI; toggle with Shift+P.
-    -- 1) Try to call Roblox's internal Freecam module if present (used on private/admin servers).
-    -- 2) Otherwise, use our custom Freecam:
-    --    - Hold RMB to rotate (mouse look)
-    --    - Wheel = FOV zoom (forward = zoom in)
-    --    - WASD move, Q/E up/down
-    --    - ↑ / ↓ speed up/down
-    --    - Player movement is disabled during Freecam
+    -- Arm via UI; toggle with Shift+P.
+    -- RMB = look (mouse delta), Wheel = FOV zoom (forward = zoom in).
+    -- WASD strafes/forward, Q/E up/down. ↑/↓ adjust speed.
+    -- Player movement is disabled while active; state is restored on exit.
     ----------------------------------------------------------------
 
-    -- Attempt to discover a baked-in "Freecam" module (executor-dependent).
-    local RBXFC = {
-        mod = nil,
-        toggle = nil,  -- function() start/stop
-        start = nil,   -- optional explicit start
-        stop  = nil,   -- optional explicit stop
-    }
-
-    local function findRobloxFreecam()
-        -- Best-effort: scan loaded modules for something called "Freecam".
-        local ok, mods = pcall(function()
-            return (typeof(getloadedmodules)=="function") and getloadedmodules() or {}
-        end)
-        if ok and type(mods)=="table" then
-            for _,m in ipairs(mods) do
-                local name = tostring(m):lower()
-                if name:find("freecam") then
-                    local ok2, mod = pcall(require, m)
-                    if ok2 and type(mod)=="table" then
-                        -- guess the API (seen variants in the wild)
-                        RBXFC.mod = mod
-                        RBXFC.toggle = mod.Toggle or mod.toggle or mod.ToggleFreecam or mod.ToggleFreeCam
-                        RBXFC.start  = mod.Start  or mod.start  or mod.Enable or mod.enable
-                        RBXFC.stop   = mod.Stop   or mod.stop   or mod.Disable or mod.disable
-                        return true
-                    end
-                end
-            end
+    -- Access PlayerModule Controls (to disable default movement cleanly)
+    local function getControls()
+        local pm = LP:FindFirstChild("PlayerScripts") and LP.PlayerScripts:FindFirstChild("PlayerModule")
+        if not pm then return nil end
+        local ok, mod = pcall(require, pm)
+        if not ok or type(mod) ~= "table" then return nil end
+        if type(mod.GetControls) == "function" then
+            local ok2, controls = pcall(mod.GetControls, mod)
+            if ok2 then return controls end
         end
-        -- Optional: try CoreGui path (can be protected; pcall anyway)
-        local cg = game:GetService("CoreGui")
-        local okcg, robloxGui = pcall(function() return cg:FindFirstChild("RobloxGui") end)
-        if okcg and robloxGui then
-            for _,desc in ipairs(robloxGui:GetDescendants()) do
-                if desc:IsA("ModuleScript") and desc.Name:lower():find("freecam") then
-                    local ok2, mod = pcall(require, desc)
-                    if ok2 and type(mod)=="table" then
-                        RBXFC.mod = mod
-                        RBXFC.toggle = mod.Toggle or mod.toggle or mod.ToggleFreecam or mod.ToggleFreeCam
-                        RBXFC.start  = mod.Start  or mod.start  or mod.Enable or mod.enable
-                        RBXFC.stop   = mod.Stop   or mod.stop   or mod.Disable or mod.disable
-                        return true
-                    end
-                end
-            end
-        end
-        return false
+        return nil
     end
 
-    -- Custom fallback Freecam
     local FC = {
         armed      = false,
         enabled    = false,
@@ -158,7 +116,7 @@ return function(tab, OrionLib)
         yaw        = 0,
         pitch      = 0,
         rotHold    = false,     -- RMB held
-        camCF      = nil,
+        camPos     = nil,       -- Vector3 position
         fovTarget  = nil,
         sens       = 0.15,      -- deg per pixel
         conns      = {},
@@ -170,19 +128,6 @@ return function(tab, OrionLib)
     local function disconnectAll()
         for _,c in ipairs(FC.conns) do pcall(function() c:Disconnect() end) end
         FC.conns = {}
-    end
-
-    local function getControls()
-        local pm = LP:FindFirstChild("PlayerScripts") and LP.PlayerScripts:FindChildOfClass("ModuleScript") -- PlayerModule may be multiple variants
-        pm = LP.PlayerScripts:FindFirstChild("PlayerModule") or pm
-        if not pm then return nil end
-        local ok, mod = pcall(function() return require(pm) end)
-        if not ok or type(mod) ~= "table" then return nil end
-        if type(mod.GetControls) == "function" then
-            local ok2, controls = pcall(mod.GetControls, mod)
-            if ok2 then return controls end
-        end
-        return nil
     end
 
     local function saveState()
@@ -215,15 +160,16 @@ return function(tab, OrionLib)
 
     local function radians(deg) return deg * math.pi/180 end
 
-    local function startFreecamCustom()
+    local function startFreecam()
         if FC.enabled then return end
         FC.enabled = true
         saveState()
 
-        FC.camCF     = Camera.CFrame
-        FC.fovTarget = Camera.FieldOfView
-        local x, y = FC.camCF:ToEulerAnglesYXZ()
+        local cf = Camera.CFrame
+        local x, y = cf:ToEulerAnglesYXZ()
         FC.pitch, FC.yaw = math.deg(x), math.deg(y)
+        FC.camPos   = cf.Position
+        FC.fovTarget = Camera.FieldOfView
 
         Camera.CameraType = Enum.CameraType.Scriptable
 
@@ -232,10 +178,11 @@ return function(tab, OrionLib)
 
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
         if hum then
-            hum.WalkSpeed = 0
             hum.AutoRotate = false
+            -- keep WalkSpeed as-is; movement is blocked via CAS below
         end
 
+        -- Sink movement so character doesn't walk during freecam
         ContextActionService:BindAction("Sorin_BlockMovement", function() return Enum.ContextActionResult.Sink end, false,
             Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
             Enum.KeyCode.Space, Enum.KeyCode.Q, Enum.KeyCode.E,
@@ -245,7 +192,7 @@ return function(tab, OrionLib)
             if gp then return end
             if input.UserInputType == Enum.UserInputType.MouseButton2 then
                 FC.rotHold = true
-                UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+                UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
             elseif input.UserInputType == Enum.UserInputType.Keyboard then
                 FC.keys[input.KeyCode] = true
                 if input.KeyCode == Enum.KeyCode.Up then
@@ -287,7 +234,7 @@ return function(tab, OrionLib)
             end
             local rot = CFrame.fromEulerAnglesYXZ(radians(FC.pitch), radians(FC.yaw), 0)
 
-            -- movement (A/D strafes using RightVector)
+            -- movement (strafe with RightVector; A/D are correct)
             local move  = Vector3.zero
             local right = rot.RightVector
             local up    = Vector3.yAxis
@@ -305,20 +252,20 @@ return function(tab, OrionLib)
             if FC.keys[Enum.KeyCode.LeftControl] or FC.keys[Enum.KeyCode.RightControl] then mult *= 0.5 end
 
             if move.Magnitude > 0 then
-                FC.camCF = FC.camCF + (move.Unit * (FC.speed * mult * dt))
+                FC.camPos = FC.camPos + (move.Unit * (FC.speed * mult * dt))
             end
 
             -- smooth FOV toward target
             Camera.FieldOfView = Camera.FieldOfView + (FC.fovTarget - Camera.FieldOfView) * 0.2
 
             -- apply camera
-            Camera.CFrame = CFrame.new(FC.camCF.Position) * rot
+            Camera.CFrame = CFrame.new(FC.camPos) * rot
         end))
 
         notify("Freecam", "Active (RMB look, Wheel = zoom, ↑/↓ speed).", 3)
     end
 
-    local function stopFreecamCustom()
+    local function stopFreecam()
         if not FC.enabled then return end
         FC.enabled = false
         disconnectAll()
@@ -327,37 +274,7 @@ return function(tab, OrionLib)
         notify("Freecam", "Disabled.", 2)
     end
 
-    -- Unified toggler: prefer Roblox mod if available, else custom.
-    local ROBLOX_FC_FOUND = findRobloxFreecam()
-
-    local function toggleFreecam()
-        if ROBLOX_FC_FOUND and (RBXFC.toggle or RBXFC.start or RBXFC.stop) then
-            -- Try toggle. If not present, emulate with start/stop by tracking state via a flag in RBXFC.mod if exists.
-            local did = false
-            if RBXFC.toggle then
-                local ok = pcall(RBXFC.toggle)
-                did = ok and true or false
-            else
-                -- naive: if we ever started, call stop next time
-                RBXFC._on = not RBXFC._on
-                if RBXFC._on and RBXFC.start then
-                    pcall(RBXFC.start)
-                    did = true
-                elseif (not RBXFC._on) and RBXFC.stop then
-                    pcall(RBXFC.stop)
-                    did = true
-                end
-            end
-            if not did then
-                -- fall back if calling failed
-                ROBLOX_FC_FOUND = false
-                if FC.enabled then stopFreecamCustom() else startFreecamCustom() end
-            end
-        else
-            if FC.enabled then stopFreecamCustom() else startFreecamCustom() end
-        end
-    end
-
+    -- Arm/disarm (Shift+P toggles only when armed)
     local armConn
     local function setArmed(on)
         if armConn then armConn:Disconnect(); armConn = nil end
@@ -365,19 +282,17 @@ return function(tab, OrionLib)
             armConn = UserInputService.InputBegan:Connect(function(input, gp)
                 if gp then return end
                 if input.KeyCode == Enum.KeyCode.P and (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)) then
-                    toggleFreecam()
+                    if FC.enabled then stopFreecam() else startFreecam() end
                 end
             end)
-            notify("Freecam", ROBLOX_FC_FOUND and "Armed (Roblox Freecam). Use Shift+P." or "Armed (Custom Freecam). Use Shift+P.", 3)
+            notify("Freecam", "Armed. Use Shift+P to toggle.", 3)
         else
-            -- ensure off
-            if FC.enabled then stopFreecamCustom() end
-            if RBXFC._on and RBXFC.stop then pcall(RBXFC.stop) RBXFC._on=false end
+            if FC.enabled then stopFreecam() end
             notify("Freecam", "Disarmed.", 2)
         end
     end
 
-    -- UI (only arming toggle)
+    -- UI
     tab:AddSection({ Name = "Freecam" })
     tab:AddToggle({
         Name = "Enable Freecam (Shift+P)",
