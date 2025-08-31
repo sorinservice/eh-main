@@ -79,7 +79,7 @@ return function(tab, OrionLib)
 
             -- base speed & multiplier
             local base       = (h.WalkSpeed and h.WalkSpeed > 0) and h.WalkSpeed or 16
-            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 3.0)
+            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 4.0)
             local target     = base * multiplier
 
             -- current horizontal speed
