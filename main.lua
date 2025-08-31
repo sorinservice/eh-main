@@ -53,7 +53,7 @@ attachTab("Info",    TABS.Info,    "main")
 attachTab("ESPs", TABS.ESPs, "main")
 attachTab("Bypass",  TABS.Bypass,  "main")
 attachTab("Misc", TABS.Misc, "main")
-attachTab("Graphics, TABS.Graphics", "main")
+attachTab("Graphics", TABS.Graphics, "main")
 
 -- UI starten
 OrionLib:Init()
