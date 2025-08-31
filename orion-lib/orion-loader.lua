@@ -28,22 +28,22 @@ local OrionLib = {
 -- === SorinHub Icons (custom) =========================================
 -- Key = short name you’ll pass in TabConfig.Icon, Value = rbxassetid
 local Icons = {
-    home   = "rbxassetid://133768243848629", -- your logo (example)
-    info   = "rbxassetid://133768243848629",
-    visual = "rbxassetid://133768243848629",
-    bypass = "rbxassetid://133768243848629",
+	home    = "rbxassetid://133768243848629", -- example
+	info    = "rbxassetid://133768243848629",
+	visual  = "rbxassetid://133768243848629",
+	bypass  = "rbxassetid://133768243848629",
+	utility = "rbxassetid://133768243848629", -- hinzugefügt
 }
 
 getgenv().gethui = function()
 	return game.CoreGui
 end
 
+-- Nur mappen, wenn 'name' ein KEY im Icons-Table ist. Kein Fallback.
 local function GetIcon(name)
-    -- return asset id or a safe fallback
-    return Icons[name] or "rbxassetid://10734984321"
+	return Icons[name]
 end
 -- ====================================================================
-
 
 local Orion = Instance.new("ScreenGui")
 Orion.Name = (getgenv()._SorinWinCfg and getgenv()._SorinWinCfg.GuiName) or "SorinUI"
@@ -74,7 +74,6 @@ function OrionLib:IsRunning()
 	else
 		return Orion.Parent == game:GetService("CoreGui")
 	end
-
 end
 
 local function AddConnection(Signal, Function)
@@ -90,7 +89,6 @@ task.spawn(function()
 	while (OrionLib:IsRunning()) do
 		wait()
 	end
-
 	for _, Connection in next, OrionLib.Connections do
 		Connection:Disconnect()
 	end
@@ -343,6 +341,7 @@ CreateElement("Image", function(ImageID)
 		BackgroundTransparency = 1
 	})
 
+	-- Nur wenn ImageID ein Key im Icons-Table ist, wird gemappt.
 	if GetIcon(ImageID) ~= nil then
 		ImageNew.Image = GetIcon(ImageID)
 	end	
@@ -586,17 +585,6 @@ function OrionLib:MakeWindow(WindowConfig)
 		Font = Enum.Font.GothamBlack,
 		TextSize = 20
 	}), "Text")
-			-- SorinHub logo left of the title
-   local SorinLogo = SetProps(MakeElement("Image", "rbxassetid://122633020844347"), {
-	  Size = UDim2.new(0, 20, 0, 20),
-	  Position = UDim2.new(0, 5, 0, 15),
-	  BackgroundTransparency = 1
-  })
-  SorinLogo.Parent = MainWindow.TopBar
-
--- shift title a bit right to make room for the logo
-WindowName.Position = UDim2.new(0, 30, 0, -24)
-
 
 	local WindowTopBarLine = AddThemeObject(SetProps(MakeElement("Frame"), {
 		Size = UDim2.new(1, 0, 0, 1),
@@ -609,13 +597,6 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 		Size = UDim2.new(0, 615, 0, 344),
 		ClipsDescendants = true
 	}), {
-		--SetProps(MakeElement("Image", "rbxassetid://3523728077"), {
-		--	AnchorPoint = Vector2.new(0.5, 0.5),
-		--	Position = UDim2.new(0.5, 0, 0.5, 0),
-		--	Size = UDim2.new(1, 80, 1, 320),
-		--	ImageColor3 = Color3.fromRGB(33, 33, 33),
-		--	ImageTransparency = 0.7
-		--}),
 		SetChildren(SetProps(MakeElement("TFrame"), {
 			Size = UDim2.new(1, 0, 0, 50),
 			Name = "TopBar"
@@ -638,6 +619,17 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 		DragPoint,
 		WindowStuff
 	}), "Main")
+
+	-- ===== FIX: SorinLogo jetzt NACH MainWindow erstellen =====
+	local SorinLogo = SetProps(MakeElement("Image", "rbxassetid://122633020844347"), {
+		Size = UDim2.new(0, 20, 0, 20),
+		Position = UDim2.new(0, 5, 0, 15),
+		BackgroundTransparency = 1
+	})
+	SorinLogo.Parent = MainWindow.TopBar
+	-- Titel etwas nach rechts, damit Platz fürs Logo ist
+	WindowName.Position = UDim2.new(0, 30, 0, -24)
+	-- ==========================================================
 
 	if WindowConfig.ShowIcon then
 		WindowName.Position = UDim2.new(0, 50, 0, -24)
@@ -735,13 +727,15 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 			Size = UDim2.new(1, 0, 0, 30),
 			Parent = TabHolder
 		}), {
-			AddThemeObject(SetProps(MakeElement("Image", GetIcon(TabConfig.Icon)), {
-	            AnchorPoint = Vector2.new(0, 0.5),
-	            Size = UDim2.new(0, 18, 0, 18),
-	            Position = UDim2.new(0, 10, 0.5, 0),
-	            ImageTransparency = 0.4,
-	            Name = "Ico"
-             }), "Text"),
+			-- FIX: Icon hier mit Rohwert (TabConfig.Icon) erzeugen;
+			-- Mapping passiert in CreateElement("Image") oder unten über GetIcon.
+			AddThemeObject(SetProps(MakeElement("Image", TabConfig.Icon), {
+				AnchorPoint = Vector2.new(0, 0.5),
+				Size = UDim2.new(0, 18, 0, 18),
+				Position = UDim2.new(0, 10, 0.5, 0),
+				ImageTransparency = 0.4,
+				Name = "Ico"
+			}), "Text"),
 
 			AddThemeObject(SetProps(MakeElement("Label", TabConfig.Name, 14), {
 				Size = UDim2.new(1, -35, 1, 0),
@@ -752,6 +746,7 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 			}), "Text")
 		})
 
+		-- Wenn Icon-Key vorhanden, setze gemapptes Asset.
 		if GetIcon(TabConfig.Icon) ~= nil then
 			TabFrame.Ico.Image = GetIcon(TabConfig.Icon)
 		end	
@@ -1066,15 +1061,15 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 				
 				local function EndDrag(Input)
 					if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-					    	Dragging = false
+						Dragging = false
 					end
 				end
 				
 				local function UpdateDrag(Input)
 					if Dragging and (Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch) then
 						local SizeScale = math.clamp((Input.Position.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
-					    	Slider:Set(SliderConfig.Min + ((SliderConfig.Max - SliderConfig.Min) * SizeScale))
-					    	SaveCfg(game.GameId)
+						Slider:Set(SliderConfig.Min + ((SliderConfig.Max - SliderConfig.Min) * SizeScale))
+						SaveCfg(game.GameId)
 					end
 				end
 
@@ -1296,7 +1291,6 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 				}), "Second")
 
 				AddConnection(BindBox.Value:GetPropertyChangedSignal("Text"), function()
-					--BindBox.Size = UDim2.new(0, BindBox.Value.TextBounds.X + 16, 0, 24)
 					TweenService:Create(BindBox, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Size = UDim2.new(0, BindBox.Value.TextBounds.X + 16, 0, 24)}):Play()
 				end)
 
@@ -1422,7 +1416,6 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 				}), "Second")
 
 				AddConnection(TextboxActual:GetPropertyChangedSignal("Text"), function()
-					--TextContainer.Size = UDim2.new(0, TextboxActual.TextBounds.X + 16, 0, 24)
 					TweenService:Create(TextContainer, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Size = UDim2.new(0, TextboxActual.TextBounds.X + 16, 0, 24)}):Play()
 				end)
 
@@ -1719,8 +1712,6 @@ WindowName.Position = UDim2.new(0, 30, 0, -24)
 		end
 		return ElementFunction   
 	end 
-	
-
 	
 	return TabFunction
 end   
