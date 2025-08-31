@@ -3,6 +3,7 @@
 -- Code & UI text in English, per your preference.
 
 return function(tab, OrionLib)
+    print("Modul v3 loaded in")
     ----------------------------------------------------------------
     -- Services
     local Players               = game:GetService("Players")
