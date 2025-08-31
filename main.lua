@@ -13,7 +13,7 @@ local TABS = {
     ESPs     = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/visuals.lua",
     Bypass   = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/bypass.lua",
     Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/graphics.lua",
-    Misc     = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/utility.lua",
+    Misc     = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/misc.lua",
 }
 
 -- Loader-Helfer
