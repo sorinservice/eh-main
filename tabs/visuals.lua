@@ -1,6 +1,7 @@
 -- tabs/visuals.lua
 -- Visuals / ESP for SorinHub (Orion UI)
--- Per-player: Team (optional), DisplayName, @Username, Distance, Equipped (grau), Skeleton, Team color
+-- Reihenfolge (von oben nach unten): Team, DisplayName, @Username, Equipped, Distance
+-- Teamfarbe färbt NUR die Team-Zeile + Skeleton.
 
 return function(tab, OrionLib)
 
@@ -22,291 +23,197 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-local function getEquippedString(char)
-    for _, inst in ipairs(char:GetChildren()) do
-        if inst:IsA("Tool") then
-            return inst.Name  -- <<< Nimmt direkt den Namen aus dem Spiel
-        end
-    end
-    return "Nothing equipped"
-end
-
-
-
-
-    ----------------------------------------------------------------
     -- Config / State (persisted via Flags)
     local STATE = {
-        -- which lines to show
-        showTeam       = false,   -- colorize + optional team line
-        showTeamName   = true,    -- include team name as first line
+        showTeam       = false,   -- Teamzeile + Skeleton einfärben
+        showTeamName   = true,    -- Teamname anzeigen (als erste Zeile)
         showName       = false,
         showUsername   = false,
+        showEquipped   = false,   -- Tools-only
         showDistance   = false,
-        showEquipped   = false,
         showBones      = false,
         showSelf       = false,
 
-        -- look & feel
         maxDistance    = 750,     -- studs
-        textColorBase  = Color3.fromRGB(230,230,230),
-        textSize       = 13,
-        textOutline    = true,
-        bonesColorBase = Color3.fromRGB(0,200,255),
-        bonesThickness = 1.5,
 
-        -- dev: append raw tool id/name if not mapped
-        devShowRawEquipped = false,
+        textSize       = 14,
+        lineGap        = 2,       -- vertikaler Zeilenabstand
+        textOutline    = true,
+
+        colorText      = Color3.fromRGB(230,230,230),
+        colorUsername  = Color3.fromRGB(200,200,200),
+        colorEquipped  = Color3.fromRGB(175,175,175),
+
+        bonesColor     = Color3.fromRGB(0,200,255),
+        bonesThickness = 1.5,
     }
 
-    -- Optional fixed team colors by name (otherwise Roblox TeamColor is used)
+    -- Optionale feste Teamfarben (sonst Roblox TeamColor)
     local TEAM_COLORS = {
-        -- ["Police"] = Color3.fromRGB(0,170,255),
+        -- ["Police"]    = Color3.fromRGB(0,170,255),
         -- ["Criminals"] = Color3.fromRGB(255,80,80),
     }
-
     local function colorForTeam(plr)
         if not (plr and plr.Team) then return nil end
-        local name = plr.Team.Name
-        if TEAM_COLORS[name] then return TEAM_COLORS[name] end
-        local ok, col = pcall(function() return plr.Team.TeamColor.Color end)
-        if ok and col then return col end
-        return nil
+        local custom = TEAM_COLORS[plr.Team.Name]
+        if custom then return custom end
+        local ok, c = pcall(function() return plr.Team.TeamColor.Color end)
+        return ok and c or nil
     end
 
     ----------------------------------------------------------------
-    -- UI (defaults OFF; Orion flags persist)
-    tab:AddToggle({
-        Name = "Team color (and show team name)",
-        Default = false, Save = true, Flag = "esp_teamCheck",
-        Callback = function(v) STATE.showTeam = v end
-    })
-    tab:AddToggle({
-        Name = "Show team name as first line",
-        Default = true, Save = true, Flag = "esp_teamName",
-        Callback = function(v) STATE.showTeamName = v end
-    })
-    tab:AddToggle({
-        Name = "Show Display Name",
-        Default = false, Save = true, Flag = "esp_showName",
-        Callback = function(v) STATE.showName = v end
-    })
-    tab:AddToggle({
-        Name = "Show @Username",
-        Default = false, Save = true, Flag = "esp_showUsername",
-        Callback = function(v) STATE.showUsername = v end
-    })
-    tab:AddToggle({
-        Name = "Show Distance",
-        Default = false, Save = true, Flag = "esp_showDistance",
-        Callback = function(v) STATE.showDistance = v end
-    })
-    tab:AddToggle({
-        Name = "Show Equipped (tools only)",
-        Default = false, Save = true, Flag = "esp_showEquipped",
-        Callback = function(v) STATE.showEquipped = v end
-    })
-    tab:AddToggle({
-        Name = "Show Skeleton",
-        Default = false, Save = true, Flag = "esp_showBones",
-        Callback = function(v) STATE.showBones = v end
-    })
-    tab:AddToggle({
-        Name = "Show Self (developer)",
-        Default = false, Save = true, Flag = "esp_showSelf",
-        Callback = function(v) STATE.showSelf = v end
-    })
-    tab:AddToggle({
-        Name = "Debug raw equipped (append ID/Name)",
-        Default = false, Save = true, Flag = "esp_rawEquipped",
-        Callback = function(v) STATE.devShowRawEquipped = v end
-    })
-    tab:AddSlider({
-        Name = "ESP Render Range",
-        Min = 50, Max = 2500, Increment = 10,
-        Default = STATE.maxDistance, ValueName = "studs",
-        Save = true, Flag = "esp_renderDist",
-        Callback = function(v) STATE.maxDistance = v end
-    })
+    -- UI (alles OFF per Default; Flags speichern)
+    tab:AddToggle({ Name="Team color (and show team name)", Default=false, Save=true, Flag="esp_teamCheck",
+        Callback=function(v) STATE.showTeam=v end })
+    tab:AddToggle({ Name="Show team name as first line", Default=true, Save=true, Flag="esp_teamName",
+        Callback=function(v) STATE.showTeamName=v end })
+    tab:AddToggle({ Name="Show Display Name", Default=false, Save=true, Flag="esp_showName",
+        Callback=function(v) STATE.showName=v end })
+    tab:AddToggle({ Name="Show @Username", Default=false, Save=true, Flag="esp_showUsername",
+        Callback=function(v) STATE.showUsername=v end })
+    tab:AddToggle({ Name="Show Equipped (tools only)", Default=false, Save=true, Flag="esp_showEquipped",
+        Callback=function(v) STATE.showEquipped=v end })
+    tab:AddToggle({ Name="Show Distance", Default=false, Save=true, Flag="esp_showDistance",
+        Callback=function(v) STATE.showDistance=v end })
+    tab:AddToggle({ Name="Show Skeleton", Default=false, Save=true, Flag="esp_showBones",
+        Callback=function(v) STATE.showBones=v end })
+    tab:AddToggle({ Name="Show Self (developer)", Default=false, Save=true, Flag="esp_showSelf",
+        Callback=function(v) STATE.showSelf=v end })
+    tab:AddSlider({ Name="ESP Render Range", Min=50, Max=2500, Increment=10,
+        Default=STATE.maxDistance, ValueName="studs", Save=true, Flag="esp_renderDist",
+        Callback=function(v) STATE.maxDistance=v end })
 
     ----------------------------------------------------------------
-    -- Drawing helpers
-    local function NewText()
+    -- Helpers (Drawing)
+    local function NewText(size, color)
         local t = Drawing.new("Text")
         t.Visible = false
-        t.Color = STATE.textColorBase
-        t.Outline = STATE.textOutline
-        t.Size = STATE.textSize
+        t.Size = size or STATE.textSize
+        t.Color = color or STATE.colorText
         t.Center = true
+        t.Outline = STATE.textOutline
         t.Transparency = 1
         return t
     end
     local function NewLine()
         local ln = Drawing.new("Line")
         ln.Visible = false
-        ln.Color = STATE.bonesColorBase
+        ln.Color = STATE.bonesColor
         ln.Thickness = STATE.bonesThickness
         ln.Transparency = 1
         return ln
     end
 
     ----------------------------------------------------------------
-    -- Per-player pool: main + equip text + skeleton lines
-    local pool = {} -- [plr] = { textMain=Text, textEquip=Text, bones={Line,...} }
+    -- Per-player pool
+    -- getrennte Textobjekte je Zeile, damit nur Team-Zeile farbig ist
+    local pool = {} -- [plr] = { textTeam, textName, textUser, textEquip, textDist, bones = {Line...} }
 
     local function alloc(plr)
         if pool[plr] then return pool[plr] end
-        local obj = { textMain = NewText(), textEquip = NewText(), bones = {} }
-        obj.textEquip.Color = Color3.fromRGB(175,175,175) -- equipped gray
-        obj.textEquip.Size  = math.max(11, STATE.textSize - 1)
+        local obj = {
+            textTeam  = NewText(STATE.textSize),                         -- farbig
+            textName  = NewText(STATE.textSize, STATE.colorText),
+            textUser  = NewText(STATE.textSize-1, STATE.colorUsername),
+            textEquip = NewText(STATE.textSize-1, STATE.colorEquipped),
+            textDist  = NewText(STATE.textSize-1, STATE.colorText),
+            bones     = {}
+        }
         for i=1,14 do obj.bones[i] = NewLine() end
         pool[plr] = obj
         return obj
     end
-
     local function hideObj(obj)
         if not obj then return end
-        if obj.textMain then obj.textMain.Visible = false end
-        if obj.textEquip then obj.textEquip.Visible = false end
-        if obj.bones then for _,ln in ipairs(obj.bones) do ln.Visible = false end end
+        if obj.textTeam  then obj.textTeam.Visible=false  end
+        if obj.textName  then obj.textName.Visible=false  end
+        if obj.textUser  then obj.textUser.Visible=false  end
+        if obj.textEquip then obj.textEquip.Visible=false end
+        if obj.textDist  then obj.textDist.Visible=false  end
+        if obj.bones then for _,ln in ipairs(obj.bones) do ln.Visible=false end end
     end
-
     local function free(plr)
-        local obj = pool[plr]; if not obj then return end
-        pcall(function() obj.textMain:Remove() end)
-        pcall(function() obj.textEquip:Remove() end)
-        for _,ln in ipairs(obj.bones) do pcall(function() ln:Remove() end) end
+        local o = pool[plr]; if not o then return end
+        for _,t in ipairs({o.textTeam,o.textName,o.textUser,o.textEquip,o.textDist}) do
+            pcall(function() t:Remove() end)
+        end
+        for _,ln in ipairs(o.bones) do pcall(function() ln:Remove() end) end
         pool[plr] = nil
     end
     Players.PlayerRemoving:Connect(free)
 
     ----------------------------------------------------------------
-    -- Equipped string (Tools only; ignore accessories)
-    local function rawIdFromTool(tool)
-        local id
-        pcall(function() id = tool.AssetId end)
-        if not id then pcall(function() id = tool:GetAttribute("AssetId") end) end
-        return id and tostring(id) or nil
+    -- Equipped-Erkennung (robuster)
+    local function findEquippedTool(char)
+        -- 1) direktes Tool-Kind
+        local tool = char and char:FindFirstChildOfClass("Tool")
+        if tool then return tool end
+        -- 2) Sicherheit: manchmal hängen Tools tiefer am Character
+        for _,d in ipairs(char and char:GetDescendants() or {}) do
+            if d:IsA("Tool") then return d end
+        end
+        return nil
     end
-
     local function getEquippedString(char)
-        local toolFound, txt = false, nil
-        for _,inst in ipairs(char:GetChildren()) do
-            if inst:IsA("Tool") then
-                toolFound = true
-                local byName = (Mapping.byName or {})[inst.Name]
-                local rid    = rawIdFromTool(inst)
-                local byId   = rid and (Mapping.byId or {})[rid] or nil
-
-                if byName or byId then
-                    txt = tostring(byName or byId)
-                else
-                    if STATE.devShowRawEquipped then
-                        if rid then
-                            txt = string.format("Unknown (Id: %s | Name: %s)", rid, inst.Name)
-                        else
-                            txt = string.format("Unknown (Name: %s)", inst.Name)
-                        end
-                    else
-                        txt = Mapping.defaultUnknown or "Unknown Item"
-                    end
-                end
-                break
-            end
-        end
-        if not toolFound then
-            return "Nothing equipped"
-        end
-        return txt or (Mapping.defaultUnknown or "Unknown Item")
+        local tool = findEquippedTool(char)
+        return tool and tool.Name or "Nothing equipped"
     end
 
     ----------------------------------------------------------------
-    -- Skeleton
+    -- Skeleton (per Frame neu zeichnen – verhindert “stuck”)
     local function partPos(char, name)
         local p = char:FindFirstChild(name); return p and p.Position
     end
     local function setLine(ln, a, b, col)
         if not (a and b) then ln.Visible=false; return end
-        local A, visA = Camera:WorldToViewportPoint(a)
-        local B, visB = Camera:WorldToViewportPoint(b)
-        if not (visA or visB) then ln.Visible=false; return end
+        local A, va = Camera:WorldToViewportPoint(a)
+        local B, vb = Camera:WorldToViewportPoint(b)
+        if not (va or vb) then ln.Visible=false; return end
         ln.From = Vector2.new(A.X, A.Y)
         ln.To   = Vector2.new(B.X, B.Y)
-        ln.Color = col or STATE.bonesColorBase
+        ln.Color = col or STATE.bonesColor
         ln.Thickness = STATE.bonesThickness
         ln.Visible = true
     end
-
-    local R15_Joints = {
-        {"UpperTorso","Head"},
-        {"LowerTorso","UpperTorso"},
-        {"UpperTorso","LeftUpperArm"},
-        {"LeftUpperArm","LeftLowerArm"},
-        {"LeftLowerArm","LeftHand"},
-        {"UpperTorso","RightUpperArm"},
-        {"RightUpperArm","RightLowerArm"},
-        {"RightLowerArm","RightHand"},
-        {"LowerTorso","LeftUpperLeg"},
-        {"LeftUpperLeg","LeftLowerLeg"},
-        {"LeftLowerLeg","LeftFoot"},
-        {"LowerTorso","RightUpperLeg"},
-        {"RightUpperLeg","RightLowerLeg"},
-        {"RightLowerLeg","RightFoot"},
+    local R15 = {
+        {"UpperTorso","Head"},{"LowerTorso","UpperTorso"},
+        {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},{"LeftLowerArm","LeftHand"},
+        {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},{"RightLowerArm","RightHand"},
+        {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},{"LeftLowerLeg","LeftFoot"},
+        {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},{"RightLowerLeg","RightFoot"},
     }
-    local R6_Joints = {
-        {"Torso","Head"},
-        {"Torso","Left Arm"},
-        {"Torso","Right Arm"},
-        {"Torso","Left Leg"},
-        {"Torso","Right Leg"},
-        {"Left Arm","Left Arm"},
-        {"Right Arm","Right Arm"},
-        {"Left Leg","Left Leg"},
-        {"Right Leg","Right Leg"},
-        {"Left Arm","Left Arm"},
-        {"Right Arm","Right Arm"},
-        {"Left Leg","Left Leg"},
-        {"Right Leg","Right Leg"},
+    local R6 = {
+        {"Torso","Head"},{"Torso","Left Arm"},{"Torso","Right Arm"},
+        {"Torso","Left Leg"},{"Torso","Right Leg"},
+        {"Left Arm","Left Arm"},{"Right Arm","Right Arm"},{"Left Leg","Left Leg"},{"Right Leg","Right Leg"},
     }
-
     local function drawSkeleton(obj, char, colorOverride)
-        local isR6 = (char:FindFirstChild("Torso") ~= nil)
-        local joints = isR6 and R6_Joints or R15_Joints
-        for i, pair in ipairs(joints) do
-            setLine(obj.bones[i], partPos(char, pair[1]), partPos(char, pair[2]), colorOverride)
+        local joints = (char:FindFirstChild("Torso") and R6 or R15)
+        for i,p in ipairs(joints) do
+            setLine(obj.bones[i], partPos(char,p[1]), partPos(char,p[2]), colorOverride)
         end
-        for i = #joints+1, #obj.bones do
-            obj.bones[i].Visible = false
-        end
+        for i=#joints+1, #obj.bones do obj.bones[i].Visible=false end
     end
 
     ----------------------------------------------------------------
-    -- Helpers
+    -- Label/Stacking
     local function isValidTarget(plr)
-        if plr == LocalPlayer and not STATE.showSelf then return false end
-        return true
+        return not (plr == LocalPlayer and not STATE.showSelf)
     end
-
-    local function buildMainLabel(plr, dist)
-        local lines = {}
-        -- Team as first line (no brackets)
-        if STATE.showTeam and STATE.showTeamName and plr.Team then
-            table.insert(lines, plr.Team.Name)
-        end
-        if STATE.showName     then table.insert(lines, plr.DisplayName or plr.Name) end
-        if STATE.showUsername then table.insert(lines, "@" .. plr.Name) end
-        if STATE.showDistance then table.insert(lines, ("Distance: %d studs"):format(math.floor(dist+0.5))) end
-        return table.concat(lines, "\n")
-    end
-
-    local function countLines(txt)
-        if not txt or txt == "" then return 0 end
-        return #string.split(txt, "\n")
+    local function stackLine(tObj, text, baseX, baseY, yOff, color)
+        if not text or text=="" then tObj.Visible=false; return yOff end
+        tObj.Text = text
+        tObj.Position = Vector2.new(baseX, baseY + yOff)
+        if color then tObj.Color = color end
+        tObj.Size = tObj.Size -- (no-op; keeps current size)
+        tObj.Outline = STATE.textOutline
+        tObj.Visible = true
+        return yOff + tObj.Size + STATE.lineGap
     end
 
     ----------------------------------------------------------------
-    -- Render loop (ESP always running; visibility controlled by toggles)
-    local function updateAll()
+    -- Render loop
+    RunService.RenderStepped:Connect(function()
         local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         for _,plr in ipairs(Players:GetPlayers()) do
             if isValidTarget(plr) then
@@ -319,38 +226,39 @@ end
                     if dist <= STATE.maxDistance then
                         local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
                         if onScreen then
-                            -- Team color (text + skeleton)
-                            local colorMain = STATE.textColorBase
-                            local teamCol   = STATE.showTeam and colorForTeam(plr) or nil
-                            if teamCol then colorMain = teamCol end
+                            local x, y = pos.X, pos.Y
+                            local yOff = 0
 
-                            -- MAIN (stack all requested lines)
-                            local mainText = buildMainLabel(plr, dist)
-                            if mainText ~= "" then
-                                obj.textMain.Text = mainText
-                                obj.textMain.Position = Vector2.new(pos.X, pos.Y)
-                                obj.textMain.Color = colorMain
-                                obj.textMain.Size = STATE.textSize
-                                obj.textMain.Outline = STATE.textOutline
-                                obj.textMain.Visible = true
+                            -- Team (nur diese Zeile farbig)
+                            local teamCol = STATE.showTeam and colorForTeam(plr) or nil
+                            if STATE.showTeam and STATE.showTeamName and plr.Team then
+                                yOff = stackLine(obj.textTeam, plr.Team.Name, x, y, yOff, teamCol or STATE.colorText)
                             else
-                                obj.textMain.Visible = false
+                                obj.textTeam.Visible = false
                             end
 
-                            -- EQUIPPED (always below the last main line)
+                            -- DisplayName
+                            if STATE.showName then
+                                yOff = stackLine(obj.textName, (plr.DisplayName or plr.Name), x, y, yOff, STATE.colorText)
+                            else obj.textName.Visible=false end
+
+                            -- @Username
+                            if STATE.showUsername then
+                                yOff = stackLine(obj.textUser, "@"..plr.Name, x, y, yOff, STATE.colorUsername)
+                            else obj.textUser.Visible=false end
+
+                            -- Equipped (Tools only)
                             if STATE.showEquipped then
-                                local lines = countLines(mainText)
-                                local yOffset = lines * STATE.textSize + 2
-                                obj.textEquip.Text = getEquippedString(char)
-                                obj.textEquip.Position = Vector2.new(pos.X, pos.Y + yOffset)
-                                obj.textEquip.Size = math.max(11, STATE.textSize - 1)
-                                obj.textEquip.Outline = STATE.textOutline
-                                obj.textEquip.Visible = true
-                            else
-                                obj.textEquip.Visible = false
-                            end
+                                yOff = stackLine(obj.textEquip, getEquippedString(char), x, y, yOff, STATE.colorEquipped)
+                            else obj.textEquip.Visible=false end
 
-                            -- SKELETON
+                            -- Distance (immer letzte Zeile)
+                            if STATE.showDistance then
+                                local dTxt = ("Distance: %d studs"):format(math.floor(dist+0.5))
+                                yOff = stackLine(obj.textDist, dTxt, x, y, yOff, STATE.colorText)
+                            else obj.textDist.Visible=false end
+
+                            -- Skeleton (teamfarben-Override nur hier)
                             if STATE.showBones then
                                 drawSkeleton(obj, char, teamCol or nil)
                             else
@@ -369,16 +277,5 @@ end
                 hideObj(pool[plr])
             end
         end
-    end
-
-    local conn = RunService.RenderStepped:Connect(updateAll)
-
-    -- Cleanup when UI/script closes
-    table.insert(OrionLib.Connections, {
-        Disconnect = function()
-            if conn then pcall(function() conn:Disconnect() end) end
-            for plr,_ in pairs(pool) do free(plr) end
-        end
-    })
-
+    end)
 end
