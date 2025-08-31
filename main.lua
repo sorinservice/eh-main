@@ -179,7 +179,8 @@ local TABS = {
     ESPs = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
     Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/heads/dev/tabs/graphics.lua",
     Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
-    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua"
+    Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
+    Player = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua"
 }
 
 -- Loader-Helfer
@@ -216,6 +217,7 @@ end
 attachTab("Info",    TABS.Info,      "info")
 attachTab("ESPs", TABS.ESPs,         "main")
 attachTab("Graphics", TABS.Graphics, "main")
+attachTab("Player", TABS.Player,     "main")
 attachTab("Bypass",  TABS.Bypass,    "main")
 attachTab("Misc", TABS.Misc,         "main")
 
