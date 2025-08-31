@@ -3,8 +3,8 @@ local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/sori
 
 -- Fenster erstellen
 local Window = OrionLib:MakeWindow({
-    Name        = "SorinHub Developer",
-    IntroText   = "SorinHub | Developer Script",
+    Name        = "SorinHub Beta Script",
+    IntroText   = "SorinHub | Beta Script",
     IntroIcon   = "rbxassetid://122633020844347",
     SaveConfig  = true,
     ConfigFolder= "SorinConfig"
