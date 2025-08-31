@@ -6,6 +6,14 @@
 return function(tab, OrionLib)
 
     ----------------------------------------------------------------
+    -- SIMPLE SWITCH (einfach hier umstellen)
+    -- "off"    => Self-ESP immer AUS, kein Toggle sichtbar
+    -- "on"     => Self-ESP immer AN,  kein Toggle sichtbar
+    -- "toggle" => Toggle sichtbar (nur in diesem Script steuerbar)
+    local SHOW_SELF_POLICY = "toggle"
+    ----------------------------------------------------------------
+
+    ----------------------------------------------------------------
     -- Services
     local Players     = game:GetService("Players")
     local Teams       = game:GetService("Teams")
@@ -32,7 +40,7 @@ return function(tab, OrionLib)
         showEquipped   = false,   -- Tools-only
         showDistance   = false,
         showBones      = false,
-        showSelf       = false,
+        showSelf       = false,   -- wird unten per Policy durchgesetzt
 
         maxDistance    = 750,     -- studs
 
@@ -45,7 +53,7 @@ return function(tab, OrionLib)
         colorEquipped  = Color3.fromRGB(175,175,175),
 
         bonesColor     = Color3.fromRGB(0,200,255),
-        bonesThickness = 1.5,
+        bonesThickness = 2,
     }
 
     -- Optionale feste Teamfarben (sonst Roblox TeamColor)
@@ -77,8 +85,24 @@ return function(tab, OrionLib)
         Callback=function(v) STATE.showDistance=v end })
     tab:AddToggle({ Name="Show Skeleton", Default=false, Save=true, Flag="esp_showBones",
         Callback=function(v) STATE.showBones=v end })
-    tab:AddToggle({ Name="Show Self (developer)", Default=false, Save=true, Flag="esp_showSelf",
-        Callback=function(v) STATE.showSelf=v end })
+
+    -- Self-ESP je nach Policy
+    if SHOW_SELF_POLICY == "toggle" then
+        tab:AddToggle({
+            Name     = "Show Self",
+            Default  = false,
+            Save     = false,            -- nicht persistieren, um Verwirrung zu vermeiden
+            Flag     = "esp_showSelf",   -- optionaler Flag-Name
+            Callback = function(v) STATE.showSelf = v end
+        })
+    elseif SHOW_SELF_POLICY == "on" then
+        STATE.showSelf = true
+        -- kein Toggle anzeigen
+    else -- "off"
+        STATE.showSelf = false
+        -- kein Toggle anzeigen
+    end
+
     tab:AddSlider({ Name="ESP Render Range", Min=50, Max=2500, Increment=10,
         Default=STATE.maxDistance, ValueName="studs", Save=true, Flag="esp_renderDist",
         Callback=function(v) STATE.maxDistance=v end })
@@ -197,15 +221,11 @@ return function(tab, OrionLib)
 
     ----------------------------------------------------------------
     -- Label/Stacking
-    local function isValidTarget(plr)
-        return not (plr == LocalPlayer and not STATE.showSelf)
-    end
     local function stackLine(tObj, text, baseX, baseY, yOff, color)
         if not text or text=="" then tObj.Visible=false; return yOff end
         tObj.Text = text
         tObj.Position = Vector2.new(baseX, baseY + yOff)
         if color then tObj.Color = color end
-        tObj.Size = tObj.Size -- (no-op; keeps current size)
         tObj.Outline = STATE.textOutline
         tObj.Visible = true
         return yOff + tObj.Size + STATE.lineGap
@@ -214,9 +234,18 @@ return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Render loop
     RunService.RenderStepped:Connect(function()
+        -- Policy strikt durchsetzen (verhindert manipulierte Configs)
+        if SHOW_SELF_POLICY == "off" then
+            STATE.showSelf = false
+        elseif SHOW_SELF_POLICY == "on" then
+            STATE.showSelf = true
+        end
+
         local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         for _,plr in ipairs(Players:GetPlayers()) do
-            if isValidTarget(plr) then
+            -- Lokalen Spieler nur berücksichtigen, wenn showSelf aktiv
+            local include = (plr ~= LocalPlayer) or (plr == LocalPlayer and STATE.showSelf)
+            if include then
                 local char = plr.Character
                 local hum  = char and char:FindFirstChildOfClass("Humanoid")
                 local hrp  = char and char:FindFirstChild("HumanoidRootPart")
