@@ -139,7 +139,7 @@ if allowed then
     sendLog({
         title = "Device check passed",
         status = "ALLOWED",
-        description = "Developer build launched.",
+        description = "Beta build launched.",
         fields = { { name = "Matched By", value = reason, inline = true } }
     })
 else
