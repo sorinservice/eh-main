@@ -1,32 +1,26 @@
 -- tabs/bypass.lua
--- VoiceChat helpers + Moderator Freecam system
--- UI exposes only a master toggle; actual Freecam toggled via Shift+P.
--- Speed with Arrow Up/Down; Zoom with mouse wheel (FOV).
--- If a native/Moderator Freecam module is available, we prefer it; otherwise, fallback.
+-- VoiceChat helpers + Freecam (Shift+P, executor-friendly)
+-- UI strings & comments in English.
 
 return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Services
-    local Players          = game:GetService("Players")
+    local Players       = game:GetService("Players")
     local VoiceChatService = game:GetService("VoiceChatService")
     local UserInputService = game:GetService("UserInputService")
-    local RunService       = game:GetService("RunService")
-    local Workspace        = game:GetService("Workspace")
+    local RunService    = game:GetService("RunService")
+    local ContextActionService = game:GetService("ContextActionService")
+    local Workspace     = game:GetService("Workspace")
 
-    local LP  = Players.LocalPlayer
-    local Cam = Workspace.CurrentCamera
+    local LP = Players.LocalPlayer
+    local Camera = Workspace.CurrentCamera
 
     local function notify(title, text, t)
         OrionLib:MakeNotification({ Name = title or "Info", Content = tostring(text or ""), Time = t or 3 })
     end
 
-    local function disconnectAll(t)
-        for _,c in pairs(t) do pcall(function() c:Disconnect() end) end
-        table.clear(t)
-    end
-
     ----------------------------------------------------------------
-    -- ========== Voice Chat Helpers (unchanged API) ==========
+    -- ========== VoiceChat (unchanged core, small tidy) ==========
     local statusPara = tab:AddParagraph("VoiceChat Status", "Checking...")
 
     local function setStatus(txt)
@@ -84,8 +78,6 @@ return function(tab, OrionLib)
         end
     })
 
-    tab:AddParagraph("How it works?", "Tries several join methods.\nIf it fails, enable Auto-Retry.")
-
     pcall(function()
         if typeof(VoiceChatService.PlayerVoiceChatStateChanged) == "RBXScriptSignal" then
             VoiceChatService.PlayerVoiceChatStateChanged:Connect(function(userId, state)
@@ -97,288 +89,247 @@ return function(tab, OrionLib)
     end)
 
     ----------------------------------------------------------------
-    -- ========== Freecam System ==========
+    -- ===================== Freecam (Shift+P) =====================
+    -- Behavior:
+    --  - Toggle with Shift+P (only if "armed" via UI toggle)
+    --  - RMB hold to rotate (mouse look), wheel to dolly (zoom in/out)
+    --  - WASD move, Q/E up/down
+    --  - Arrow Up/Down to change speed
+    --  - Player controls are disabled while active (character won't move)
+    ----------------------------------------------------------------
     local FC = {
-        systemEnabled = false,   -- master switch (UI)
-        active        = false,   -- currently in freecam
-        useNative     = false,   -- true if we found/loaded a native module
-        native        = nil,     -- { enable=fn, disable=fn, toggle=fn } if available
-
-        -- fallback state
-        speed       = 40,        -- studs/s
-        yaw         = 0,
-        pitch       = 0,
-        pos         = nil,
-        smooth      = 12,
-        conns       = {},
-        guardConn   = nil,
-        mouseConn   = nil,
-
-        -- restore store
-        old = {},
+        armed      = false,
+        enabled    = false,
+        speed      = 64,        -- studs/sec
+        minSpeed   = 2,
+        maxSpeed   = 2048,
+        yaw        = 0,
+        pitch      = 0,
+        rotHold    = false,     -- RMB held
+        camCF      = nil,
+        wheelStep  = 6,         -- studs per wheel notch
+        sens       = 0.15,      -- mouse look sensitivity (deg per pixel)
+        conns      = {},
+        keys       = {},
+        saved      = {},
+        controls   = nil,       -- PlayerModule controls
+        armConn    = nil,
     }
 
-    -- Try to locate a native/Moderator freecam module (best-effort, safe to fail)
-    local function findNativeFreecam()
-        local candidates = {}
-        local cg = game:GetService("CoreGui")
-        local ps = LP:FindFirstChildOfClass("PlayerScripts")
+    local function bind(fn)
+        local c = fn
+        table.insert(FC.conns, c)
+        return c
+    end
+    local function connect(sig, fn)
+        local c = sig:Connect(fn)
+        table.insert(FC.conns, c)
+        return c
+    end
+    local function disconnectAll()
+        for _,c in ipairs(FC.conns) do pcall(function() c:Disconnect() end) end
+        FC.conns = {}
+    end
 
-        local function scan(container)
-            if not container then return end
-            for _,d in ipairs(container:GetDescendants()) do
-                if d:IsA("ModuleScript") and (
-                    d.Name:lower() == "freecam" or
-                    d.Name:lower() == "modfreecam" or
-                    d.Name:lower() == "moderatorfreecam"
-                ) then
-                    table.insert(candidates, d)
-                end
-            end
+    local function setMouseLock(lock)
+        if lock then
+            UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+        else
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
         end
+    end
 
-        pcall(scan, cg)
-        pcall(scan, ps)
-
-        for _,mod in ipairs(candidates) do
-            local ok, lib = pcall(require, mod)
-            if ok and type(lib) == "table" then
-                -- Heuristics: accept common shapes
-                if type(lib.Toggle) == "function" or type(lib.toggle) == "function"
-                or type(lib.Enable) == "function" or type(lib.enable) == "function"
-                or type(lib.Start)  == "function" or type(lib.start)  == "function" then
-                    return {
-                        ref = lib,
-                        enable = lib.Enable or lib.enable or lib.Start or lib.start or lib.Toggle or lib.toggle,
-                        disable = lib.Disable or lib.disable or lib.Stop or lib.stop or lib.Toggle or lib.toggle,
-                        toggle = lib.Toggle or lib.toggle
-                    }
-                end
-            end
+    local function getControls()
+        -- Disable default player movement cleanly (no sliding/jumping)
+        local pm = LP:FindFirstChild("PlayerScripts") and LP.PlayerScripts:FindFirstChild("PlayerModule")
+        if not pm then return nil end
+        local ok, mod = pcall(function() return require(pm) end)
+        if not ok or type(mod) ~= "table" then return nil end
+        if type(mod.GetControls) == "function" then
+            local ok2, controls = pcall(mod.GetControls, mod)
+            if ok2 then return controls end
         end
         return nil
     end
 
-    -- Fallback freecam (our implementation)
-    local function startFallback()
-        if FC.active then return end
-        FC.active = true
+    local function saveState()
+        FC.saved.cameraType = Camera.CameraType
+        FC.saved.subject    = Camera.CameraSubject
+        FC.saved.cframe     = Camera.CFrame
+        FC.saved.fov        = Camera.FieldOfView
+        -- player motion lock backup
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            FC.saved.walkspeed  = hum.WalkSpeed
+            FC.saved.autorotate = hum.AutoRotate
+        end
+        FC.saved.mouseBehavior = UserInputService.MouseBehavior
+    end
 
-        -- store
-        FC.old.type       = Cam.CameraType
-        FC.old.subject    = Cam.CameraSubject
-        FC.old.cf         = Cam.CFrame
-        FC.old.fov        = Cam.FieldOfView
-        FC.old.mouseIcon  = UserInputService.MouseIconEnabled
-        FC.old.mouseBehav = UserInputService.MouseBehavior
+    local function restoreState()
+        Camera.CameraType   = FC.saved.cameraType or Enum.CameraType.Custom
+        Camera.CameraSubject= FC.saved.subject or LP.Character
+        Camera.CFrame       = FC.saved.cframe or Camera.CFrame
+        Camera.FieldOfView  = FC.saved.fov or Camera.FieldOfView
+        UserInputService.MouseBehavior = FC.saved.mouseBehavior or Enum.MouseBehavior.Default
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            if FC.saved.walkspeed ~= nil then hum.WalkSpeed = FC.saved.walkspeed end
+            if FC.saved.autorotate ~= nil then hum.AutoRotate = FC.saved.autorotate end
+        end
+        if FC.controls then pcall(function() FC.controls:Enable() end) end
+        ContextActionService:UnbindAction("Sorin_BlockMovement")
+    end
 
-        FC.pos = FC.old.cf.Position
+    local function radians(deg) return deg * math.pi/180 end
 
-        -- derive yaw/pitch
-        do
-            local look = FC.old.cf.LookVector
-            FC.yaw   = math.atan2(-look.X, -look.Z) -- face direction
-            FC.pitch = math.asin(look.Y)
+    local function startFreecam()
+        if FC.enabled then return end
+        FC.enabled = true
+        saveState()
+
+        -- seed camera frame + yaw/pitch from current view
+        FC.camCF = Camera.CFrame
+        local x, y, _ = FC.camCF:ToEulerAnglesYXZ()     -- X=pitch, Y=yaw
+        FC.pitch = math.deg(x)
+        FC.yaw   = math.deg(y)
+
+        Camera.CameraType = Enum.CameraType.Scriptable
+
+        -- hard disable character controls
+        FC.controls = getControls()
+        if FC.controls then pcall(function() FC.controls:Disable() end) end
+
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.WalkSpeed = 0
+            hum.AutoRotate = false
         end
 
-        Cam.CameraType = Enum.CameraType.Scriptable
-        UserInputService.MouseIconEnabled = false
-        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+        -- sink typical movement to be extra-safe
+        ContextActionService:BindAction("Sorin_BlockMovement", function() return Enum.ContextActionResult.Sink end, false,
+            Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
+            Enum.KeyCode.Space, Enum.KeyCode.Q, Enum.KeyCode.E,
+            Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift)
 
-        -- mouse look
-        FC.mouseConn = UserInputService.InputChanged:Connect(function(input, gpe)
-            if gpe then return end
-            if input.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = input.Delta
-                FC.yaw   = FC.yaw   - d.X * 0.0025
-                FC.pitch = math.clamp(FC.pitch - d.Y * 0.0025, math.rad(-85), math.rad(85))
+        -- inputs
+        connect(UserInputService.InputBegan, function(input, gp)
+            if gp then return end
+            if input.UserInputType == Enum.UserInputType.MouseButton2 then
+                FC.rotHold = true
+                setMouseLock(true)
+            elseif input.UserInputType == Enum.UserInputType.Keyboard then
+                FC.keys[input.KeyCode] = true
+
+                -- speed up/down with arrows
+                if input.KeyCode == Enum.KeyCode.Up then
+                    FC.speed = math.clamp(FC.speed * 1.15, FC.minSpeed, FC.maxSpeed)
+                    notify("Freecam", ("Speed: %.0f"):format(FC.speed), 1.5)
+                elseif input.KeyCode == Enum.KeyCode.Down then
+                    FC.speed = math.clamp(FC.speed / 1.15, FC.minSpeed, FC.maxSpeed)
+                    notify("Freecam", ("Speed: %.0f"):format(FC.speed), 1.5)
+                end
             end
         end)
 
-        -- movement + smoothing
-        FC.conns.move = RunService.RenderStepped:Connect(function(dt)
-            if UserInputService:GetFocusedTextBox() then return end
+        connect(UserInputService.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton2 then
+                FC.rotHold = false
+                setMouseLock(false)
+            elseif input.UserInputType == Enum.UserInputType.Keyboard then
+                FC.keys[input.KeyCode] = nil
+            end
+        end)
 
-            local forward = CFrame.fromOrientation(FC.pitch, FC.yaw, 0).LookVector
-            -- FIX: proper right-hand side vector (A/D were inverted previously)
-            local right   = forward:Cross(Vector3.yAxis).Unit
-            local up      = Vector3.yAxis
+        -- wheel dolly: scroll forward = zoom in
+        connect(UserInputService.InputChanged, function(input, gp)
+            if gp or not FC.enabled then return end
+            if input.UserInputType == Enum.UserInputType.MouseWheel then
+                local delta = input.Position.Z     -- +1 (forward), -1 (back)
+                local dir = FC.camCF.LookVector
+                FC.camCF = FC.camCF + (dir * (delta * FC.wheelStep))
+                Camera.CFrame = FC.camCF
+            end
+        end)
 
-            local v = Vector3.zero
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then v += forward end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then v -= forward end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then v -= right   end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then v += right   end
-            if UserInputService:IsKeyDown(Enum.KeyCode.E) then v += up      end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Q) then v -= up      end
+        -- main loop
+        connect(RunService.RenderStepped, function(dt)
+            if not FC.enabled then return end
+
+            -- rotate on RMB
+            if FC.rotHold then
+                local md = UserInputService:GetMouseDelta()
+                FC.yaw   = FC.yaw   - (md.X * FC.sens)
+                FC.pitch = math.clamp(FC.pitch - (md.Y * FC.sens), -85, 85)
+            end
+
+            -- build orientation
+            local rot = CFrame.fromEulerAnglesYXZ(radians(FC.pitch), radians(FC.yaw), 0)
+
+            -- WASD + Q/E movement (A/D are correct strafes via RightVector)
+            local move = Vector3.zero
+            local right = rot.RightVector
+            local up    = Vector3.yAxis
+            local look  = rot.LookVector
+
+            if FC.keys[Enum.KeyCode.W] then move += look end
+            if FC.keys[Enum.KeyCode.S] then move -= look end
+            if FC.keys[Enum.KeyCode.D] then move += right end
+            if FC.keys[Enum.KeyCode.A] then move -= right end
+            if FC.keys[Enum.KeyCode.E] then move += up end
+            if FC.keys[Enum.KeyCode.Q] then move -= up end
 
             local mult = 1
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-                mult = mult * 3.0
-            end
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl) then
-                mult = mult * 0.35
+            if FC.keys[Enum.KeyCode.LeftShift] or FC.keys[Enum.KeyCode.RightShift] then mult = mult * 2 end
+            if FC.keys[Enum.KeyCode.LeftControl] or FC.keys[Enum.KeyCode.RightControl] then mult = mult * 0.5 end
+
+            if move.Magnitude > 0 then
+                FC.camCF = FC.camCF + (move.Unit * (FC.speed * mult * dt))
             end
 
-            if v.Magnitude > 0 then
-                v = v.Unit * (FC.speed * mult * dt)
-                FC.pos += v
-            end
-
-            local target = CFrame.new(FC.pos) * CFrame.fromOrientation(FC.pitch, FC.yaw, 0)
-            local alpha = 1 - math.exp(-FC.smooth * dt)
-            Cam.CFrame = Cam.CFrame:Lerp(target, alpha)
+            -- apply final camera
+            Camera.CFrame = CFrame.new(FC.camCF.Position) * rot
         end)
 
-        -- guard: keep scriptable
-        FC.guardConn = RunService.Stepped:Connect(function()
-            if not FC.active then return end
-            if Cam.CameraType ~= Enum.CameraType.Scriptable then
-                Cam.CameraType = Enum.CameraType.Scriptable
-            end
-        end)
+        notify("Freecam", "Active (RMB to look, wheel to zoom, ↑/↓ speed).", 3)
     end
 
-    local function stopFallback()
-        if not FC.active then return end
-        FC.active = false
-        disconnectAll(FC.conns)
-        if FC.mouseConn then FC.mouseConn:Disconnect(); FC.mouseConn = nil end
-        if FC.guardConn then FC.guardConn:Disconnect(); FC.guardConn = nil end
-
-        -- restore
-        pcall(function()
-            Cam.CameraType    = FC.old.type or Enum.CameraType.Custom
-            Cam.CameraSubject = FC.old.subject
-            Cam.CFrame        = FC.old.cf or Cam.CFrame
-            Cam.FieldOfView   = FC.old.fov or Cam.FieldOfView
-        end)
-        pcall(function()
-            UserInputService.MouseIconEnabled = (FC.old.mouseIcon ~= nil) and FC.old.mouseIcon or true
-            UserInputService.MouseBehavior    = FC.old.mouseBehav or Enum.MouseBehavior.Default
-        end)
+    local function stopFreecam()
+        if not FC.enabled then return end
+        FC.enabled = false
+        disconnectAll()
+        setMouseLock(false)
+        restoreState()
+        notify("Freecam", "Disabled.", 2)
     end
 
-    local function toggleFallback()
-        if FC.active then
-            stopFallback()
-            notify("Freecam", "Disabled.", 2)
+    local function toggleFreecam()
+        if FC.enabled then stopFreecam() else startFreecam() end
+    end
+
+    local function setArmed(on)
+        FC.armed = on and true or false
+        if FC.armConn then FC.armConn:Disconnect(); FC.armConn = nil end
+        if FC.armed then
+            FC.armConn = UserInputService.InputBegan:Connect(function(input, gp)
+                if gp then return end
+                if input.KeyCode == Enum.KeyCode.P and (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)) then
+                    toggleFreecam()
+                end
+            end)
+            notify("Freecam", "Armed. Use Shift+P to toggle.", 3)
         else
-            startFallback()
-            notify("Freecam", "Enabled (use Arrow Up/Down for speed, Mouse Wheel to zoom).", 4)
+            if FC.enabled then stopFreecam() end
+            notify("Freecam", "Disarmed.", 2)
         end
     end
 
-    -- Native wrapper (if available)
-    local function startNative()
-        if FC.active then return end
-        FC.active = true
-        if FC.native.toggle then
-            FC.native.toggle()
-        elseif FC.native.enable then
-            FC.native.enable()
-        end
-    end
-    local function stopNative()
-        if not FC.active then return end
-        FC.active = false
-        if FC.native.toggle then
-            FC.native.toggle()
-        elseif FC.native.disable then
-            FC.native.disable()
-        end
-    end
-    local function toggleNative()
-        if FC.active then stopNative() else startNative() end
-        notify("Freecam", FC.active and "Enabled." or "Disabled.", 2)
-    end
-
-    -- Master input dispatcher (only active when systemEnabled)
-    local InputConns = {}
-
-    local function bindInputs()
-        if InputConns.bound then return end
-        InputConns.bound = true
-
-        -- Shift+P toggles freecam
-        InputConns.began = UserInputService.InputBegan:Connect(function(input, gpe)
-            if gpe then return end
-
-            if input.KeyCode == Enum.KeyCode.P then
-                if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-                    if FC.useNative then toggleNative() else toggleFallback() end
-                end
-            end
-
-            -- Arrow key speed control (fallback only)
-            if not FC.useNative and FC.active then
-                if input.KeyCode == Enum.KeyCode.Up then
-                    FC.speed = math.clamp(FC.speed * 1.15, 5, 1000)
-                    notify("Freecam", ("Speed: %.1f"):format(FC.speed), 1.5)
-                elseif input.KeyCode == Enum.KeyCode.Down then
-                    FC.speed = math.clamp(FC.speed / 1.15, 5, 1000)
-                    notify("Freecam", ("Speed: %.1f"):format(FC.speed), 1.5)
-                end
-            end
-        end)
-
-        -- Mouse wheel zoom (adjust FOV while active)
-        InputConns.changed = UserInputService.InputChanged:Connect(function(input, gpe)
-            if gpe then return end
-            if input.UserInputType == Enum.UserInputType.MouseWheel and FC.active then
-                local delta = input.Position.Z  -- +1/-1
-                local newFov = math.clamp(Cam.FieldOfView - delta * 2.5, 20, 90)
-                Cam.FieldOfView = newFov
-            end
-        end)
-    end
-
-    local function unbindInputs()
-        if not InputConns.bound then return end
-        if InputConns.began then InputConns.began:Disconnect() end
-        if InputConns.changed then InputConns.changed:Disconnect() end
-        InputConns.began, InputConns.changed = nil, nil
-        InputConns.bound = false
-    end
-
-    -- Master toggle (UI) — arms/disarms hotkeys; does NOT start the camera.
-    tab:AddSection({Name = "Moderator Freecam"})
-    tab:AddParagraph("Hotkey", "Shift+P toggles camera.\nArrow Up/Down = speed (fallback)\nMouse Wheel = zoom (FOV)")
-
+    -- UI for freecam
+    tab:AddSection({ Name = "Freecam" })
     tab:AddToggle({
-        Name = "Enable Freecam System",
-        Default = false, Save = true, Flag = "bypass_freecam_system",
-        Callback = function(enabled)
-            if enabled then
-                -- try native once
-                if not FC.native then
-                    FC.native = findNativeFreecam()
-                    FC.useNative = FC.native ~= nil
-                    if FC.useNative then
-                        notify("Freecam", "Using native freecam module.", 3)
-                    else
-                        notify("Freecam", "Native freecam not found; using fallback.", 3)
-                    end
-                end
-                FC.systemEnabled = true
-                bindInputs()
-                notify("Freecam", "System armed. Press Shift+P to toggle.", 3)
-            else
-                -- disable camera if currently active
-                if FC.active then
-                    if FC.useNative then stopNative() else stopFallback() end
-                end
-                FC.systemEnabled = false
-                unbindInputs()
-                notify("Freecam", "System disabled.", 2)
-            end
-        end
+        Name = "Enable Freecam (Shift+P)",
+        Default = false, Save = true, Flag = "bypass_freecam_arm",
+        Callback = function(v) setArmed(v) end
     })
 
-    -- Optional: ensure camera restored on character/respawn
-    LP.CharacterRemoving:Connect(function()
-        if FC.active and not FC.useNative then
-            stopFallback()
-        end
-    end)
 end
