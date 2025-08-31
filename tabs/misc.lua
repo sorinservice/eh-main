@@ -1,5 +1,5 @@
--- tabs/utility.lua
--- Utility: only a clean respawn that drops/loses all tools.
+-- tabs/misc.lua
+-- Misc: only a clean respawn that drops/loses all tools.
 
 return function(tab, OrionLib)
     local Players = game:GetService("Players")
