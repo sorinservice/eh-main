@@ -169,10 +169,11 @@ local Window = OrionLib:MakeWindow({
 
 -- Tabs-Mapping (DEV-Branch)
 local TABS = {
-    Info    = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/info.lua",
-    ESPs    = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/visuals.lua",
-    Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/bypass.lua",
-    Utility = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/utility.lua"
+    Info     = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/info.lua",
+    ESPs     = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/visuals.lua",
+    Bypass   = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/bypass.lua",
+    Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/graphics.lua",
+    Misc     = "https://raw.githubusercontent.com/sorinservice/eh-main/beta/tabs/utility.lua",
 }
 
 -- Loader-Helfer
@@ -206,10 +207,11 @@ local function attachTab(name, url, iconKey)
 end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
-attachTab("Info",    TABS.Info,    "info")
-attachTab("ESPs", TABS.ESPs,       "main")
-attachTab("Bypass",  TABS.Bypass,  "main")
-attachTab("Utility", TABS.Utility, "main")
+attachTab("Info",      TABS.Info,     "info")
+attachTab("ESPs",      TABS.ESPs,     "main")
+attachTab("Graphics",  TABS.Graphics, "main")
+attachTab("Bypass",    TABS.Bypass,   "main")
+attachTab("Misc",      TABS.Misc,     "main")
 
 -- UI starten
 OrionLib:Init()
