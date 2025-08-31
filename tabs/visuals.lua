@@ -1,7 +1,7 @@
 -- tabs/visuals.lua
 -- Visuals / ESP for SorinHub (Orion UI)
 -- Reihenfolge (von oben nach unten): Team, DisplayName, @Username, Equipped, Distance
--- Teamfarbe färbt NUR die Team-Zeile + Skeleton.
+-- EIN Toggle für Team: zeigt Team-Namen und färbt Team-Zeile + Skeleton in Teamfarbe.
 
 return function(tab, OrionLib)
 
@@ -10,7 +10,7 @@ return function(tab, OrionLib)
     -- "off"    => Self-ESP immer AUS, kein Toggle sichtbar
     -- "on"     => Self-ESP immer AN,  kein Toggle sichtbar
     -- "toggle" => Toggle sichtbar (nur in diesem Script steuerbar)
-    local SHOW_SELF_POLICY = "off"
+    local SHOW_SELF_POLICY = "toggle"
     ----------------------------------------------------------------
 
     ----------------------------------------------------------------
@@ -33,8 +33,7 @@ return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Config / State (persisted via Flags)
     local STATE = {
-        showTeam       = false,   -- Teamzeile + Skeleton einfärben
-        showTeamName   = true,    -- Teamname anzeigen (als erste Zeile)
+        showTeam       = false,   -- EIN Schalter: Team-Name + Teamfarbe (inkl. Skeleton-Färbung)
         showName       = false,
         showUsername   = false,
         showEquipped   = false,   -- Tools-only
@@ -70,11 +69,15 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- UI (alles OFF per Default; Flags speichern)
-    tab:AddToggle({ Name="Team color (and show team name)", Default=false, Save=true, Flag="esp_teamCheck",
-        Callback=function(v) STATE.showTeam=v end })
-    tab:AddToggle({ Name="Show team name as first line", Default=true, Save=true, Flag="esp_teamName",
-        Callback=function(v) STATE.showTeamName=v end })
+    -- UI (Flags speichern)
+    tab:AddToggle({
+        Name = "Team info (name + team color)",
+        Default = false,
+        Save = true,
+        Flag = "esp_teamInfo",
+        Callback = function(v) STATE.showTeam = v end
+    })
+
     tab:AddToggle({ Name="Show Display Name", Default=false, Save=true, Flag="esp_showName",
         Callback=function(v) STATE.showName=v end })
     tab:AddToggle({ Name="Show @Username", Default=false, Save=true, Flag="esp_showUsername",
@@ -91,8 +94,8 @@ return function(tab, OrionLib)
         tab:AddToggle({
             Name     = "Show Self",
             Default  = false,
-            Save     = false,            -- nicht persistieren, um Verwirrung zu vermeiden
-            Flag     = "esp_showSelf",   -- optionaler Flag-Name
+            Save     = false,            -- absichtlich nicht persistieren
+            Flag     = "esp_showSelf",
             Callback = function(v) STATE.showSelf = v end
         })
     elseif SHOW_SELF_POLICY == "on" then
@@ -258,9 +261,9 @@ return function(tab, OrionLib)
                             local x, y = pos.X, pos.Y
                             local yOff = 0
 
-                            -- Team (nur diese Zeile farbig)
+                            -- Team-Zeile (farbig, wenn aktiv)
                             local teamCol = STATE.showTeam and colorForTeam(plr) or nil
-                            if STATE.showTeam and STATE.showTeamName and plr.Team then
+                            if STATE.showTeam and plr.Team then
                                 yOff = stackLine(obj.textTeam, plr.Team.Name, x, y, yOff, teamCol or STATE.colorText)
                             else
                                 obj.textTeam.Visible = false
@@ -287,7 +290,7 @@ return function(tab, OrionLib)
                                 yOff = stackLine(obj.textDist, dTxt, x, y, yOff, STATE.colorText)
                             else obj.textDist.Visible=false end
 
-                            -- Skeleton (teamfarben-Override nur hier)
+                            -- Skeleton (Teamfarbe, wenn Team aktiv)
                             if STATE.showBones then
                                 drawSkeleton(obj, char, teamCol or nil)
                             else
