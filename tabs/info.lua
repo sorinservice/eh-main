@@ -34,7 +34,8 @@ return function(tab, OrionLib)
     tab:AddParagraph(
         "Thanks for using SorinHub",
         "This is the Developer Version. Why are you using this?\n" ..
-        "It's not safe to use. You could be banned!!!"
+        "It's not safe to use. You could be banned!!!\n" ..
+        "New Tab: Player, not safe to use. NEVER USE MAIN ACCOUNTS!"
     )
 
     tab:AddButton({
