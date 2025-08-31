@@ -33,7 +33,7 @@ return function(tab, OrionLib)
     tab:AddParagraph(
         "Welcome to SorinHub",
         "This is the stable user build.\n" ..
-        "Regelmäßige Updates, Fokus auf Zuverlässigkeit."
+        "Version 0 - Still in development"
     )
 
     tab:AddButton({
