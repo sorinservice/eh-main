@@ -2,7 +2,8 @@
 -- SorinHub - Movement Tab (refined slide-speed + jump-only escape)
 
 return function(tab, OrionLib)
-    print("movement_test_v2.5_fixed")
+    print("movement_test_v2.6")
+
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
@@ -50,7 +51,7 @@ return function(tab, OrionLib)
 
     local SLIDE = {
         enabled    = false,
-        multiplier = 1.2,
+        multiplier = 1.2,   -- default, will be overwritten by saved flag if present
         conn       = nil,
         toggleObj  = nil,
     }
@@ -76,16 +77,20 @@ return function(tab, OrionLib)
             if moveDir.Magnitude <= 0.01 then return end
             moveDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
 
+            -- base speed & multiplier
             local base       = (h.WalkSpeed and h.WalkSpeed > 0) and h.WalkSpeed or 16
-            local multiplier = math.clamp(SLIDE.multiplier or 25.0, 0.5, 100.0)
+            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 3.0)
             local target     = base * multiplier
 
+            -- current horizontal speed
             local vel        = r.AssemblyLinearVelocity
             local curHorz    = Vector3.new(vel.X, 0, vel.Z).Magnitude
             if curHorz >= target - 0.05 then return end
 
-            local deficit    = target - curHorz
-            local extra      = math.clamp(deficit * dt, 0, 3.0 * dt)
+            -- smoother catch-up: depends on deficit and target, feels slider immediately
+            local deficit = target - curHorz
+            local maxExtra = math.clamp(target * 0.12 * dt, 0, 10.0 * dt)
+            local extra    = math.clamp(deficit * 0.6 * dt, 0, maxExtra)
             if extra <= 0 then return end
 
             -- simple anti-clip check forward
@@ -165,15 +170,26 @@ return function(tab, OrionLib)
         Default = false, Save = true, Flag = "mv_slide_on",
         Callback = function(v) if v then startSlide() else stopSlide() end end
     })
+
+    -- Multiplier slider (robust & consistent with runtime clamp)
     tab:AddSlider({
         Name = "Slide Multiplier",
-        Min = 25.0, Max = 100.0, Increment = 0.5,
+        Min = 0.8, Max = 3.0, Increment = 0.05,
         Default = 1.2, ValueName = "x",
         Save = true, Flag = "mv_slide_mult",
         Callback = function(v)
-            SLIDE.multiplier = v
+            v = tonumber(v) or SLIDE.multiplier
+            SLIDE.multiplier = math.clamp(v, 0.8, 3.0)
+            -- print("[Slide] multiplier =", SLIDE.multiplier)
         end
     })
+
+    -- adopt saved value on load (if Orion persists flags before this code runs)
+    if OrionLib and OrionLib.Flags and OrionLib.Flags["mv_slide_mult"] then
+        local saved = tonumber(OrionLib.Flags["mv_slide_mult"])
+        if saved then SLIDE.multiplier = math.clamp(saved, 0.8, 3.0) end
+    end
+
     tab:AddBind({
         Name = "Toggle Slide (T)",
         Default = Enum.KeyCode.T, Hold = false,
@@ -214,8 +230,7 @@ return function(tab, OrionLib)
         end
     end, CONNS)
 
-    -- optional: clean-up hook if you have an unload
-    -- (uncomment when you integrate a global Unload event)
+    -- optional: global unload hook
     -- on(SomeUnloadSignal, function()
     --     stopSlide()
     --     stopNoclip()
