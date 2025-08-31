@@ -79,7 +79,7 @@ return function(tab, OrionLib)
 
             -- base speed & multiplier
             local base       = (h.WalkSpeed and h.WalkSpeed > 0) and h.WalkSpeed or 16
-            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 4.0)
+            local multiplier = math.clamp(SLIDE.multiplier or 1.2, 0.8, 5.0)
             local target     = base * multiplier
 
             -- current horizontal speed
@@ -174,7 +174,7 @@ return function(tab, OrionLib)
     -- Multiplier slider (robust & consistent with runtime clamp)
     tab:AddSlider({
         Name = "Slide Multiplier",
-        Min = 0.8, Max = 3.0, Increment = 0.05,
+        Min = 0.1, Max = 1.0, Increment = 0.05,
         Default = 1.2, ValueName = "x",
         Save = true, Flag = "mv_slide_mult",
         Callback = function(v)
