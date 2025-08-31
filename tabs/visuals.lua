@@ -10,7 +10,7 @@ return function(tab, OrionLib)
     -- "off"    => Self-ESP immer AUS, kein Toggle sichtbar
     -- "on"     => Self-ESP immer AN,  kein Toggle sichtbar
     -- "toggle" => Toggle sichtbar (nur in diesem Script steuerbar)
-    local SHOW_SELF_POLICY = "toggle"
+    local SHOW_SELF_POLICY = "off"
     ----------------------------------------------------------------
 
     ----------------------------------------------------------------
