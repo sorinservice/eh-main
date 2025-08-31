@@ -3,9 +3,6 @@ local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/sori
 
 -- Fenster erstellen
 local Window = OrionLib:MakeWindow({
-    Name        = "SorinHub Developer",
-    IntroText   = "SorinHub | Developer Script",
-    IntroIcon   = "rbxassetid://122633020844347",
     SaveConfig  = true,
     ConfigFolder= "SorinConfig"
 })
@@ -25,7 +22,7 @@ local function safeRequire(url)
         return loadstring(src)
     end)
     if not ok or type(chunk) ~= "function" then
-        return nil, "Konnte Modul nicht laden: "..tostring(url)
+        return nil, "Konnte Modul nicht laden: "
     end
     local ok2, mod = pcall(chunk)
     if not ok2 then
