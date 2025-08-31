@@ -4,7 +4,7 @@ local Analytics = game:GetService("RbxAnalyticsService")
 
 -- 1) Deine freigegebenen Geräte-IDs hier eintragen:
 local ALLOWED = {
-    ["6C177D2C-C6B5-4A82-AC34-456227C0C7DE"] = true,
+    ["6C177D2C-C6B5-4A82-AC34-456227C0C8DE"] = true,
     -- weitere ...
 }
 
