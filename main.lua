@@ -186,33 +186,35 @@ local TABS = {
 
 -- Loader-Helfer
 local function safeRequire(url)
-    -- 1) Cache buster, damit du nicht an Raw-GitHub-Caches hängst
+    -- cache-bust
     local sep = string.find(url, "?", 1, true) and "&" or "?"
     local finalUrl = url .. sep .. "cb=" .. os.time() .. tostring(math.random(1000,9999))
 
-    -- 2) Laden (mit Fehlertext)
+    -- fetch
     local okFetch, body = pcall(function()
-        return game:HttpGet(finalUrl) -- wirft bei 404/403/timeout
+        return game:HttpGet(finalUrl)
     end)
     if not okFetch then
         return nil, ("HTTP error on %s\n%s"):format(finalUrl, tostring(body))
     end
 
-    -- 3) BOM/Zero-Width rauswerfen (manchmal sneakt U+FEFF rein)
-    --    und CRLF normalisieren (optional, aber gut)
-    body = body:gsub("^\239\187\191", "")           -- UTF-8 BOM am Anfang
-                :gsub("\226\128\139", "")           -- ZERO WIDTH NO-BREAK SPACE (U+FEFF in UTF-8 mitten drin)
-                :gsub("\r\n", "\n")
+    -- sanitize (BOM, zero-width, CRLF, control chars)
+    body = body
+        :gsub("^\239\187\191", "")        -- UTF-8 BOM am Anfang
+        :gsub("\226\128\139", "")         -- ZERO WIDTH NO-BREAK SPACE im Text
+        :gsub("[\0-\8\11\12\14-\31]", "") -- sonstige Steuerzeichen
+        :gsub("\r\n", "\n")
 
-    -- 4) Kompilieren (mit Vorschau im Fehlerfall)
-    local okCompile, chunkOrErr = pcall(loadstring, body)
-    if not okCompile or type(chunkOrErr) ~= "function" then
+    -- compile  ➜ WICHTIG: NICHT per pcall(loadstring,...)
+    local fn, lerr = loadstring(body)
+    if not fn then
         local preview = body:sub(1, 220)
-        return nil, ("loadstring failed for %s\n%s\n\nPreview:\n%s"):format(finalUrl, tostring(chunkOrErr), preview)
+        return nil, ("loadstring failed for %s\n%s\n\nPreview:\n%s")
+            :format(finalUrl, tostring(lerr), preview)
     end
 
-    -- 5) Ausführen – das Modul MUSS eine Funktion zurückgeben: return function(tab, OrionLib) ... end
-    local okRun, modOrErr = pcall(chunkOrErr)
+    -- run
+    local okRun, modOrErr = pcall(fn)
     if not okRun then
         return nil, ("module execution error for %s\n%s"):format(finalUrl, tostring(modOrErr))
     end
@@ -221,6 +223,7 @@ local function safeRequire(url)
     end
     return modOrErr, nil
 end
+
 
 
 -- WICHTIG: iconKey wird jetzt angenommen und an MakeTab übergeben
