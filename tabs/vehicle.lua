@@ -14,6 +14,13 @@ local toggleDebounce= 0
 -- Mobile-hold States
 local mHold = { forward=false, back=false, left=false, right=false, up=false, down=false }
 
+-- kleine Notification-Hilfe
+local function notify(title, text, secs)
+    pcall(function()
+        OrionLib:MakeNotification({ Name=title, Content=text, Time=secs or 3 })
+    end)
+end
+
 local function forEachPart(vf, fn)
     if not vf then return end
     for _,p in ipairs(vf:GetDescendants()) do
@@ -22,8 +29,10 @@ local function forEachPart(vf, fn)
 end
 
 local function getVehicleRoot()
-    local vf = myVehicleFolder(); if not vf then return nil end
-    ensurePrimaryPart(vf); return vf
+    local vf = myVehicleFolder()
+    if not vf then return nil end
+    ensurePrimaryPart(vf)
+    return vf
 end
 
 local function setFlightPhysics(vf, on)
@@ -40,7 +49,7 @@ local function setFlightPhysics(vf, on)
             if bp and bp.Parent then
                 bp.Anchored   = flags.Anchored
                 bp.CanCollide = flags.CanCollide
-                -- ganz leicht nach unten "anstupsen"
+                -- leicht nach unten “anstupsen”
                 local v = bp.AssemblyLinearVelocity
                 bp.AssemblyLinearVelocity = Vector3.new(v.X, math.min(v.Y, -3), v.Z)
             end
@@ -51,16 +60,12 @@ end
 
 local function setFlyEnabled(state)
     if state == flyEnabled then
-        -- UI nur synchronisieren, falls nötig
         if uiFlyToggle and uiFlyToggle.Set then pcall(function() uiFlyToggle:Set(flyEnabled) end) end
         return
     end
     flyEnabled = state
-
-    -- UI spiegeln (falls Orion-Objekt Set unterstützt)
     if uiFlyToggle and uiFlyToggle.Set then pcall(function() uiFlyToggle:Set(flyEnabled) end) end
 
-    -- Loop verwalten
     if flyConn then flyConn:Disconnect(); flyConn=nil end
 
     local vf = getVehicleRoot()
@@ -72,13 +77,11 @@ local function setFlyEnabled(state)
     end
 
     if not flyEnabled then
-        -- Aus: Physik wieder normal & absetzen
         setFlightPhysics(vf, false)
         notify("Car Fly", "Deaktiviert.")
         return
     end
 
-    -- An: verankern & los
     setFlightPhysics(vf, true)
     lastAirCF = vf:GetPivot()
     safeTimer = 0
@@ -88,21 +91,23 @@ local function setFlyEnabled(state)
         if not flyEnabled then return end
         toggleDebounce = math.max(0, toggleDebounce - dt)
 
-        local vf2 = getVehicleRoot(); if not vf2 then return end
+        local vf2 = getVehicleRoot()
+        if not vf2 then return end
+
         local rootCF = vf2:GetPivot()
         lastAirCF = rootCF
 
-        -- Tastatur + Mobile-Hold kombinieren
-        local dir = Vector3.zero
-        if UserInput:IsKeyDown(Enum.KeyCode.W) or mHold.forward then dir += Camera.CFrame.LookVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.S) or mHold.back    then dir -= Camera.CFrame.LookVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.D) or mHold.right   then dir += Camera.CFrame.RightVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.A) or mHold.left    then dir -= Camera.CFrame.RightVector end
+        -- Tastatur + Mobile-Hold kombi
+        local dir = Vector3.new(0,0,0)
+        if UserInput:IsKeyDown(Enum.KeyCode.W) or mHold.forward then dir = dir + Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.S) or mHold.back    then dir = dir - Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.D) or mHold.right   then dir = dir + Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.A) or mHold.left    then dir = dir - Camera.CFrame.RightVector end
         if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) or mHold.up then
-            dir += Vector3.new(0,1,0)
+            dir = dir + Vector3.new(0,1,0)
         end
         if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) or mHold.down then
-            dir -= Vector3.new(0,1,0)
+            dir = dir - Vector3.new(0,1,0)
         end
 
         if dir.Magnitude > 0 then
@@ -115,9 +120,9 @@ local function setFlyEnabled(state)
             lastAirCF = newCF
         end
 
-        -- SafeFly: Spieler + Vehicle für 0.5s auf Boden -> exakt zurück
+        -- SafeFly: 0.5s Boden, dann exakt zurück
         if safeFly then
-            safeTimer += dt
+            safeTimer = safeTimer + dt
             if safeTimer >= 6 then
                 safeTimer = 0
                 local params = RaycastParams.new()
@@ -126,17 +131,17 @@ local function setFlyEnabled(state)
                 local from = vf2:GetPivot().Position
                 local hit = Workspace:Raycast(from, Vector3.new(0,-1000,0), params)
 
-                -- Ankern aus, Kollision an -> “echter” Bodenkontakt
                 setFlightPhysics(vf2, false)
                 local groundCF
                 if hit then
-                    groundCF = CFrame.new(hit.Position + Vector3.new(0, 2, 0), hit.Position + Camera.CFrame.LookVector)
+                    groundCF = CFrame.new(hit.Position + Vector3.new(0, 2, 0),
+                                          hit.Position + Camera.CFrame.LookVector)
                 else
-                    groundCF = CFrame.new(from - Vector3.new(0, (from.Y-4), 0))
+                    groundCF = CFrame.new(from.X, 4, from.Z)
                 end
                 pcall(function() vf2:PivotTo(groundCF) end)
 
-                -- falls Spieler NICHT sitzt: HRP mitnehmen
+                -- falls Spieler nicht sitzt: mitnehmen
                 local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
                 local hrp = hum and hum.RootPart
                 if hrp and (not hum.SeatPart) then
@@ -144,8 +149,6 @@ local function setFlyEnabled(state)
                 end
 
                 task.wait(0.5)
-
-                -- zurück in die Luftpose & wieder in Flugmodus
                 if lastAirCF then pcall(function() vf2:PivotTo(lastAirCF) end) end
                 setFlightPhysics(vf2, true)
             end
@@ -153,7 +156,7 @@ local function setFlyEnabled(state)
     end)
 end
 
--- X-Key steuert NUR den Toggle (kein Doppeltoggle mehr)
+-- X-Key toggelt EINMAL den gemeinsamen State
 UserInput.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.KeyCode == Enum.KeyCode.X then
@@ -210,16 +213,13 @@ local function spawnMobileFly()
         return b
     end
 
-    -- Toggle Button
     mkBtn("Toggle", 10, 34, 60, 28, function() setFlyEnabled(not flyEnabled) end, nil)
-
-    -- Hold-Buttons
     mkBtn("^",   80, 34, 60, 28, function() mHold.forward = true end, function() mHold.forward = false end)
     mkBtn("v",   80, 68, 60, 28, function() mHold.back    = true end, function() mHold.back    = false end)
     mkBtn("<<",  10, 68, 60, 28, function() mHold.left    = true end, function() mHold.left    = false end)
     mkBtn(">>", 150, 68, 60, 28, function() mHold.right   = true end, function() mHold.right   = false end)
     mkBtn("Up",  10, 102,60, 28, function() mHold.up      = true end, function() mHold.up      = false end)
-    mkBtn("Down",150,102,60,28, function() mHold.down    = true end, function() mHold.down    = false end)
+    mkBtn("Down",150,102,60,28, function() mHold.down     = true end, function() mHold.down    = false end)
 
     -- drag
     local dragging, start, startPos
@@ -261,7 +261,6 @@ secF:AddBind({
     Default = Enum.KeyCode.X,
     Hold = false,
     Callback = function()
-        -- der Bind kippt NUR den UI-Zustand (kein Doppel-Toggle)
         setFlyEnabled(not flyEnabled)
     end
 })
