@@ -181,7 +181,7 @@ local TABS = {
     Bypass   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
     Misc     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
     Player   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua",
-    Aimbot   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua"
+    Aimbot   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua?v1"
 }
 
 -- Loader-Helfer
