@@ -1,263 +1,393 @@
 -- tabs/vehicle.lua
-return function(tab, Orion)
-    print(
-    "VehicleMod loaded. | Not safe to use, dev version 1.1\n" ..
-    "Warn Distance: 300 Studs."
-)
-
+return function(tab, OrionLib)
     ----------------------------------------------------------------
-    -- SorinHub | Vehicle Mod (DEV)
-    -- - To Vehicle (Teleport auf Sitz & einsteigen)
-    -- - Bring Vehicle (Auto zu dir & einsteigen)
-    -- - Lokales Kennzeichen (Front+Back) mit Persistenz
+    -- SorinHub · Vehicle Mod (dev)
+    -- - To Vehicle (auf Sitz teleportieren & einsteigen)
+    -- - Bring Vehicle (Fahrzeug zu dir & einsteigen)
+    -- - License Plate (lokal, persistiert & auto-reapply)
     ----------------------------------------------------------------
 
+    -----------------------------
+    -- Services & singletons
+    -----------------------------
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local HttpService  = game:GetService("HttpService")
+    local TweenService = game:GetService("TweenService")
     local Workspace    = game:GetService("Workspace")
 
     local LP           = Players.LocalPlayer
-    local Vehicles     = Workspace:FindFirstChild("Vehicles")
-    local Camera       = Workspace.CurrentCamera
 
-    -- ===== Settings im Code (keine UI) =====
-    local WARN_DISTANCE_STUDS = 300    -- ab hier wird nur gewarnt (kein Teleport)
-    local BRING_OFFSET = CFrame.new(0, 2.75, -5) -- wohin das Auto vor dich gestellt wird
-
-    -- ===== Persistenz =====
-    local SAVE_FOLDER = Orion.Folder or "SorinConfig"
+    -----------------------------
+    -- Persistenz
+    -----------------------------
+    local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
     local SAVE_FILE   = SAVE_FOLDER .. "/vehicle.json"
 
-    local function safeRead()
-        if isfile and isfile(SAVE_FILE) then
-            local ok, tbl = pcall(function()
-                return HttpService:JSONDecode(readfile(SAVE_FILE))
-            end)
-            if ok and type(tbl) == "table" then return tbl end
-        end
-        return { plateText = "" }
+    local function safe_read_json(path)
+        local ok, data = pcall(function()
+            if isfile and isfile(path) then
+                return HttpService:JSONDecode(readfile(path))
+            end
+            return nil
+        end)
+        return ok and data or nil
     end
 
-    local function safeWrite(tbl)
+    local function safe_write_json(path, tbl)
         pcall(function()
-            if makefolder and not isfolder(SAVE_FOLDER) then makefolder(SAVE_FOLDER) end
-            if writefile then writefile(SAVE_FILE, HttpService:JSONEncode(tbl)) end
+            if makefolder and not isfolder(SAVE_FOLDER) then
+                makefolder(SAVE_FOLDER)
+            end
+            if writefile then
+                writefile(path, HttpService:JSONEncode(tbl))
+            end
         end)
     end
 
-    local CFG = safeRead()
+    -----------------------------
+    -- Config (nur was der User ändert)
+    -----------------------------
+    local CFG = {
+        plateText   = "",    -- wird in UI geändert
+    }
 
-    -- ===== Utils =====
-    local function getMyVehicle()
-        if not Vehicles then return nil end
-        return Vehicles:FindFirstChild(LP.Name)
+    do
+        local saved = safe_read_json(SAVE_FILE)
+        if type(saved) == "table" then
+            for k,v in pairs(saved) do CFG[k] = v end
+        end
     end
 
-    local function getDriveSeat(model)
-        if not model then return nil end
-        -- häufig liegt er direkt unter dem Model als VehicleSeat/Seat "DriveSeat"
-        local seat = model:FindFirstChild("DriveSeat", true)
-        if seat and seat:IsA("BasePart") then return seat end
-        -- Fallback: irgendein VehicleSeat
-        for _,d in ipairs(model:GetDescendants()) do
-            if d:IsA("VehicleSeat") or d:IsA("Seat") then
-                return d
+    local function save_cfg()
+        safe_write_json(SAVE_FILE, {
+            plateText = CFG.plateText,
+        })
+    end
+
+    -----------------------------
+    -- Game helpers
+    -----------------------------
+    local function VehiclesFolder()
+        return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
+    end
+
+    local function myVehicleFolder()
+        local vRoot = VehiclesFolder()
+        if not vRoot then return nil end
+        local mf = vRoot:FindFirstChild(LP.Name)
+        if mf then return mf end
+        -- fallback: nach Besitzer-Attribut o.ä. suchen
+        for _,m in ipairs(vRoot:GetChildren()) do
+            if m:IsA("Model") or m:IsA("Folder") then
+                local owner = (m:GetAttribute and m:GetAttribute("Owner")) or m:FindFirstChild("Owner")
+                if owner == LP.Name then return m end
             end
         end
         return nil
     end
 
-    local function dist(a, b)
-        return (a - b).Magnitude
+    local function findDriveSeat(vFolder)
+        if not vFolder then return nil end
+        -- 1) klassisch: DriveSeat
+        local ds = vFolder:FindFirstChild("DriveSeat", true)
+        if ds and ds:IsA("Seat") then return ds end
+        -- 2) Seats/… suchen
+        local seats = vFolder:FindFirstChild("Seats", true)
+        if seats then
+            for _,ch in ipairs(seats:GetDescendants()) do
+                if ch:IsA("Seat") then return ch end
+            end
+        end
+        -- 3) irgendein Seat als Fallback
+        for _,d in ipairs(vFolder:GetDescendants()) do
+            if d:IsA("Seat") then return d end
+        end
+        return nil
     end
 
-    local function notify(t)
-        Orion:MakeNotification({Name="Vehicle", Content=t, Time=3})
+    -----------------------------
+    -- Einsteigen via Prompt
+    -----------------------------
+    local function findDriverPrompt(vFolder)
+        if not vFolder then return nil end
+        local nearest, bestDist = nil, math.huge
+        local ds = findDriveSeat(vFolder)
+        local dsPos = (ds and ds.Position) or (vFolder:GetPivot and vFolder:GetPivot().Position) or vFolder.Position
+
+        for _,pp in ipairs(vFolder:GetDescendants()) do
+            if pp:IsA("ProximityPrompt") then
+                local a = string.lower(pp.ActionText or "")
+                local o = string.lower(pp.ObjectText or "")
+                if a:find("fahrer") or o:find("fahrer") or a:find("driver") or o:find("driver") or a:find("seat") or o:find("seat") then
+                    -- nimm das Prompt, das dem DriveSeat am nächsten ist
+                    local base = (pp.Parent.GetPivot and pp.Parent:GetPivot().Position) or (pp.Parent.Position or dsPos)
+                    local d = (base - dsPos).Magnitude
+                    if d < bestDist then
+                        bestDist, nearest = d, pp
+                    end
+                end
+            end
+        end
+        return nearest
     end
 
-    local function firePromptIfAny(seat)
-        -- manche Spiele haben direkt am Sitz einen ProximityPrompt
-        for _,d in ipairs(seat:GetDescendants()) do
-            if d:IsA("ProximityPrompt") then
-                pcall(function() fireproximityprompt(d) end)
+    local function tpBesidePrompt(pp)
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hrp  = char:WaitForChild("HumanoidRootPart")
+        local base = (pp.Parent.GetPivot and pp.Parent:GetPivot()) or CFrame.new(pp.Parent.Position)
+        -- seitlich/leicht erhöht an die Tür
+        hrp.CFrame = base * CFrame.new(-1.1, 1.4, 0.2)
+    end
+
+    local function pressPromptHard(pp, tries)
+        tries = tries or 8
+        if not pp then return false end
+        for _=1, tries do
+            if typeof(fireproximityprompt) == "function" then
+                pcall(function() fireproximityprompt(pp, pp.HoldDuration and math.max(pp.HoldDuration,0.1) or 0.2) end)
+            else
+                pp:InputHoldBegin()
+                task.wait(pp.HoldDuration and math.max(pp.HoldDuration,0.1) or 0.2)
+                pp:InputHoldEnd()
+            end
+            task.wait(0.08)
+            local ds = findDriveSeat(myVehicleFolder())
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            if ds and hum and ds.Occupant == hum then
                 return true
             end
         end
         return false
     end
 
-    local function seatHumanoid(hum, seat)
-        if not (hum and seat) then return false end
+    local function enterSeat(seat)
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hum  = char:FindFirstChildOfClass("Humanoid")
+        if not (seat and hum) then return false end
 
-        -- 1) freundlicher Weg: ProximityPrompt (falls vorhanden)
-        if firePromptIfAny(seat) then return true end
-
-        -- 2) Roblox-API: Seat:Sit(humanoid) (funktioniert nur, wenn Humanoid den Sitz berührt)
-        -- wir teleportieren knapp über den Sitz und "touchen" ihn für den Weld
-        local root = hum.RootPart or (hum.Parent and hum.Parent:FindFirstChild("HumanoidRootPart"))
-        if not root then return false end
-
-        -- knapp über den Sitz
-        root.CFrame = seat.CFrame * CFrame.new(0, 2, 0)
-        task.wait()
-
-        -- Touch-Hack (Client): erzeugt den SeatWeld
-        if firetouchinterest then
-            pcall(function()
-                firetouchinterest(root, seat, 0) -- touch begin
-                task.wait(0.05)
-                firetouchinterest(root, seat, 1) -- touch end (Seat weld bleibt)
-            end)
+        -- 1) bevorzugt via Prompt
+        local vf = myVehicleFolder()
+        local pp = findDriverPrompt(vf)
+        if pp then
+            tpBesidePrompt(pp)
+            task.wait(0.05)
+            if pressPromptHard(pp, 10) then return true end
         end
 
-        -- versuchen zu sitzen
-        pcall(function() seat:Sit(hum) end)
-        hum.Sit = true
+        -- 2) direkter Sitzversuch
+        if pcall(function() seat:Sit(hum) end) and seat.Occupant == hum then
+            return true
+        end
 
-        -- kurzer Check
-        task.wait(0.10)
-        return hum.Sit == true
+        -- 3) kleiner Stupser
+        if hum.RootPart then
+            hum:MoveTo(seat.Position + seat.CFrame.LookVector * -0.9)
+            local t0 = time()
+            while time() - t0 < 1.2 do
+                task.wait()
+                if seat.Occupant == hum then return true end
+            end
+            hum.RootPart.CFrame = seat.CFrame * CFrame.new(0, 0.1, -0.2)
+            task.wait(0.05)
+        end
+        return seat.Occupant == hum
     end
 
-    local function applyPlateTextTo(model, text)
-        if not (model and text and text ~= "") then return false end
-        local ok = false
-        local body = model:FindFirstChild("Body")
-        local plates = body and body:FindFirstChild("LicensePlates") or body and body:FindFirstChild("LicencePlates")
-        if not plates then
-            -- manchmal liegen Front/Back direkt unter Body
-            plates = body
-        end
-        if not plates then return false end
+    -----------------------------
+    -- Bewegungen
+    -----------------------------
+    local WARN_DISTANCE = 300      -- nur Hinweis; kein UI nötig
+    local BRING_OFFSET  = CFrame.new(0, 0, -3) -- 3 studs vor dir erscheinen
 
-        local function applyToNode(node)
-            if not node then return end
-            local gui = node:FindFirstChild("Gui", true)
-            local label = gui and gui:FindFirstChildWhichIsA("TextLabel", true)
-            if label and label:IsA("TextLabel") then
-                pcall(function()
-                    label.Text = text
-                end)
-                ok = true
-            end
-        end
-
-        applyToNode(plates:FindFirstChild("Front"))
-        applyToNode(plates:FindFirstChild("Back"))
-        -- Fallback: falls die Struktur anders ist, versuche beide Label im Body zu finden
-        if not ok then
-            for _,d in ipairs(body:GetDescendants()) do
-                if d:IsA("TextLabel") then
-                    pcall(function() d.Text = text end)
-                    ok = true
-                end
-            end
-        end
-        return ok
-    end
-
-    local function ensurePlateWatcher()
-        if not Vehicles then return end
-        -- bei neuen Autos sofort Label setzen
-        Vehicles.ChildAdded:Connect(function(m)
-            task.wait(0.2) -- kurz warten bis Bau fertig
-            if m.Name == LP.Name and CFG.plateText ~= "" then
-                applyPlateTextTo(m, CFG.plateText)
-            end
-        end)
-    end
-    ensurePlateWatcher()
-
-    -- ===== Aktionen =====
     local function toVehicle()
-        local car = getMyVehicle()
-        if not car then return notify("Kein Fahrzeug gefunden.") end
-
-        local seat = getDriveSeat(car)
-        if not seat then return notify("DriveSeat nicht gefunden.") end
-
-        local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if not (hrp and hum) then return notify("Spieler nicht bereit.") end
-
-        local d = dist(hrp.Position, seat.Position)
-        if d > WARN_DISTANCE_STUDS then
-            return notify(("Zu weit entfernt (%.0f studs)."):format(d))
+        local vf = myVehicleFolder()
+        local ds = findDriveSeat(vf)
+        if not (vf and ds) then
+            OrionLib:MakeNotification({Name="Vehicle", Content="Kein eigenes Fahrzeug gefunden.", Time=3})
+            return
         end
 
-        -- teleport knapp neben den Sitz (nicht exakt drauf – AntiSeat mag sonst blocken)
-        hrp.CFrame = seat.CFrame * CFrame.new(-1.25, 2, -1.25)
-        task.wait(0.05)
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hrp  = char:WaitForChild("HumanoidRootPart")
+        local dist = (hrp.Position - ds.Position).Magnitude
+        if dist > WARN_DISTANCE then
+            OrionLib:MakeNotification({Name="Vehicle", Content=("Achtung: Fahrzeug ist weit entfernt (~%d studs)."):format(math.floor(dist)), Time=3})
+        end
 
-        if seatHumanoid(hum, seat) then
-            notify("Eingestiegen.")
+        -- nahe an die Tür setzen
+        hrp.CFrame = ds.CFrame * CFrame.new(-2.0, 1.2, 0.0)
+        task.wait(0.05)
+        if enterSeat(ds) then
+            OrionLib:MakeNotification({Name="Vehicle", Content="Eingestiegen.", Time=2})
         else
-            notify("Konnte nicht einsteigen (Anti-TP/Anti-Seat?).")
+            OrionLib:MakeNotification({Name="Vehicle", Content="Konnte nicht einsteigen (Anti-TP/Anti-Seat?).", Time=3})
         end
     end
 
     local function bringVehicle()
-        local car = getMyVehicle()
-        if not car then return notify("Kein Fahrzeug gefunden.") end
+        local vf = myVehicleFolder()
+        local ds = findDriveSeat(vf)
+        if not (vf and ds) then
+            OrionLib:MakeNotification({Name="Vehicle", Content="Kein eigenes Fahrzeug gefunden.", Time=3})
+            return
+        end
 
-        local seat = getDriveSeat(car)
-        if not seat then return notify("DriveSeat nicht gefunden.") end
+        local char = LP.Character or LP.CharacterAdded:Wait()
+        local hrp  = char:WaitForChild("HumanoidRootPart")
 
-        local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if not (hrp and hum) then return notify("Spieler nicht bereit.") end
-
-        -- Auto vor dich setzen (Pivot nutzt Model:PivotTo, Roblox erstellt nötige Welds)
-        local targetCF = hrp.CFrame * BRING_OFFSET
-        pcall(function() car:PivotTo(targetCF) end)
+        -- neben dich holen (PivotTo ist am saubersten)
+        local target = hrp.CFrame * BRING_OFFSET
+        if vf.PivotTo then
+            vf:PivotTo(CFrame.new(target.Position, (hrp.Position + hrp.CFrame.LookVector)))
+        else
+            -- Fallback, falls altes API
+            local root = vf.PrimaryPart or ds
+            if root then
+                root.CFrame = target
+            end
+        end
         task.wait(0.05)
 
-        if seatHumanoid(hum, seat) then
-            notify("Fahrzeug gebracht & eingestiegen.")
+        if enterSeat(ds) then
+            OrionLib:MakeNotification({Name="Vehicle", Content="Fahrzeug gebracht & eingestiegen.", Time=2})
         else
-            notify("Fahrzeug gebracht – Einsteigen fehlgeschlagen.")
+            OrionLib:MakeNotification({Name="Vehicle", Content="Fahrzeug gebracht, aber Einsteigen blockiert.", Time=3})
         end
     end
 
-    local function applyPlateCurrent()
-        local car = getMyVehicle()
-        if not car then return notify("Kein Fahrzeug gefunden.") end
-        if CFG.plateText == "" then return notify("Kennzeichen-Text ist leer.") end
-        if applyPlateTextTo(car, CFG.plateText) then
-            notify("Kennzeichen angewandt (lokal).")
-        else
-            notify("Konnte Kennzeichen nicht anwenden.")
+    -----------------------------
+    -- License Plate (lokal)
+    -----------------------------
+    local function applyPlateToVehicle(vFolder, text)
+        if not (vFolder and text and #text > 0) then return false end
+
+        local function setOne(gui)
+            if not gui then return false end
+            local tl = gui:FindFirstChildOfClass("TextLabel")
+            if not tl then
+                for _,d in ipairs(gui:GetDescendants()) do
+                    if d:IsA("TextLabel") then tl = d; break end
+                end
+            end
+            if tl then
+                tl.Text = text
+                return true
+            end
+            return false
+        end
+
+        -- Erwarteter Pfad
+        local body = vFolder:FindFirstChild("Body", true)
+        local plates = body and body:FindFirstChild("LicensePlates", true)
+        if not plates then plates = body and body:FindFirstChild("LicencePlates", true) end -- Schreibweise absichern
+
+        local ok = false
+        if plates then
+            local back = plates:FindFirstChild("Back", true)
+            local front = plates:FindFirstChild("Front", true)
+
+            local function guiOf(node)
+                return node and (node:FindFirstChild("Gui") or node:FindFirstChild("SurfaceGui") or node:FindFirstChildWhichIsA("SurfaceGui"))
+            end
+
+            ok = setOne(guiOf(back)) or ok
+            ok = setOne(guiOf(front)) or ok
+        end
+
+        -- Fallback: irgendein SurfaceGui namens License… durchsuchen
+        if not ok then
+            for _,sg in ipairs(vFolder:GetDescendants()) do
+                if sg:IsA("SurfaceGui") and string.lower(sg.Name):find("license") then
+                    ok = setOne(sg) or ok
+                end
+            end
+        end
+
+        return ok
+    end
+
+    local function applyPlateIfPossible(vf, text)
+        if not (vf and text and #text>0) then return false end
+        return applyPlateToVehicle(vf, text)
+    end
+
+    local function ensurePlateForMyVehicle(timeout)
+        timeout = timeout or 6.0
+        if (CFG.plateText or "") == "" then return end
+        local t0 = time()
+        while time() - t0 < timeout do
+            local vf = myVehicleFolder()
+            if vf and applyPlateIfPossible(vf, CFG.plateText) then
+                return true
+            end
+            task.wait(0.25)
+        end
+        return false
+    end
+
+    -- Bei Start & bei Neuspawns erneut anwenden
+    task.defer(function() ensurePlateForMyVehicle(6) end)
+    local vConn
+    do
+        local root = VehiclesFolder()
+        if root then
+            if vConn then vConn:Disconnect() end
+            vConn = root.ChildAdded:Connect(function(ch)
+                if ch.Name == LP.Name then
+                    task.defer(function() ensurePlateForMyVehicle(6) end)
+                end
+            end)
         end
     end
 
-    -- ===== ORION UI =====
-    local sec = tab:AddSection({ Name = "Vehicle" })
-    sec:AddButton({ Name = "To Vehicle (auf Sitz & einsteigen)", Callback = toVehicle })
-    sec:AddButton({ Name = "Bring Vehicle (vor dich & einsteigen)", Callback = bringVehicle })
+    -----------------------------
+    -- ORION UI
+    -----------------------------
+    local secVehicle = tab:AddSection({ Name = "Vehicle" })
+
+    secVehicle:AddButton({
+        Name = "To Vehicle (auf Sitz & einsteigen)",
+        Callback = toVehicle
+    })
+
+    secVehicle:AddButton({
+        Name = "Bring Vehicle (vor dich & einsteigen)",
+        Callback = bringVehicle
+    })
 
     local secPlate = tab:AddSection({ Name = "License Plate (lokal)" })
-    local plateBox
-    plateBox = secPlate:AddTextbox({
+
+    secPlate:AddTextbox({
         Name = "Kennzeichen-Text",
-        Default = (CFG.plateText or ""),
+        Default = CFG.plateText,
         TextDisappear = false,
         Callback = function(txt)
             CFG.plateText = tostring(txt or "")
-            safeWrite(CFG)
+            save_cfg()
         end
-    })
-    secPlate:AddButton({
-        Name = "Kennzeichen auf aktuelles Fahrzeug anwenden",
-        Callback = applyPlateCurrent
     })
 
-    -- ===== Auto-Apply beim Join, falls Auto schon da ist
-    task.spawn(function()
-        task.wait(0.5)
-        local car = getMyVehicle()
-        if car and CFG.plateText ~= "" then
-            applyPlateTextTo(car, CFG.plateText)
+    secPlate:AddButton({
+        Name = "Kennzeichen auf aktuelles Fahrzeug anwenden",
+        Callback = function()
+            local vf = myVehicleFolder()
+            if not vf then
+                OrionLib:MakeNotification({Name="Vehicle", Content="Kein eigenes Fahrzeug gefunden.", Time=3})
+                return
+            end
+            if (CFG.plateText or "") == "" then
+                OrionLib:MakeNotification({Name="Vehicle", Content="Bitte Text eingeben.", Time=2})
+                return
+            end
+            if applyPlateToVehicle(vf, CFG.plateText) then
+                OrionLib:MakeNotification({Name="Vehicle", Content="Kennzeichen gesetzt (lokal).", Time=2})
+            else
+                OrionLib:MakeNotification({Name="Vehicle", Content="Konnte Kennzeichen nicht finden/setzen.", Time=3})
+            end
         end
-    end)
+    })
+
+    -- kleine Konsole
+    print(("VehicleMod loaded. Dev build.\nWarn Distance: %d studs."):format(WARN_DISTANCE))
 end
