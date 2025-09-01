@@ -175,14 +175,15 @@ local Window = OrionLib:MakeWindow({
 
 -- Tabs-Mapping (DEV-Branch)
 local TABS = {
-    Info     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
-    ESPs     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
-    Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/graphics.lua",
-    Bypass   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
-    Misc     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
-    Player   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua",
-    Aimbot   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua?v1",
-    Locator  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/locator.lua?"
+    Info        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
+    ESPs        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
+    Graphics    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/graphics.lua",
+    Bypass      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
+    Misc        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
+    Player      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua",
+    Aimbot      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua",
+    Locator     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/locator.lua",
+    Vehicle Mod = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/vehicle.lua"
 }
 
 -- Loader-Helfer
@@ -243,14 +244,16 @@ end
 
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
-attachTab("Info",    TABS.Info,      "info")
-attachTab("Aimbot", TABS.Aimbot,     "main")
-attachTab("ESPs", TABS.ESPs,         "main")
-attachTab("Graphics", TABS.Graphics, "main")
-attachTab("Player", TABS.Player,     "main")
-attachTab("Bypass",  TABS.Bypass,    "main")
-attachTab("Misc", TABS.Misc,         "main")
-attachTab("Locator", TABS.Locator,   "main")
+attachTab("Info",    TABS.Info,             "info")
+attachTab("Vehicle Mod", TABS.Vehicle Mod,  "main")
+attachTab("Aimbot", TABS.Aimbot,            "main")
+attachTab("ESPs", TABS.ESPs,                "main")
+attachTab("Graphics", TABS.Graphics,        "main")
+attachTab("Player", TABS.Player,            "main")
+attachTab("Bypass",  TABS.Bypass,           "main")
+attachTab("Misc", TABS.Misc,                "main")
+attachTab("Locator", TABS.Locator,          "main")
+
 
 -- UI starten
 OrionLib:Init()
