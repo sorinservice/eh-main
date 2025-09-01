@@ -228,7 +228,7 @@ local function attachTab(name, url, iconKey)
     local Tab = Window:MakeTab({ Name = name, Icon = iconKey })
     local mod, err = safeRequire(url)
     if not mod then
-        Tab:AddParagraph("Fehler", err or "Unbekannter Fehler")
+        Tab:AddParagraph("Fehler", "Loader:\n" .. tostring(err))
         return
     end
     local ok, msg = pcall(mod, Tab, OrionLib)
@@ -236,6 +236,7 @@ local function attachTab(name, url, iconKey)
         Tab:AddParagraph("Fehler", "Tab-Init fehlgeschlagen:\n" .. tostring(msg))
     end
 end
+
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,      "info")
