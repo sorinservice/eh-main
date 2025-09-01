@@ -2,9 +2,6 @@
 return function(tab, OrionLib)
     print("[SorinHub] Aimbot stable success")
 
-
-    ----------------------------------------------------------------
-
     -----------------------------
     -- Services & singletons
     -----------------------------
@@ -43,7 +40,7 @@ return function(tab, OrionLib)
     end
 
     -----------------------------
-    -- Konfiguration (Defaults AUS)
+    -- Konfiguration
     -----------------------------
     local CFG = {
         Enabled         = false,                        -- Haupt-Toggle
@@ -407,14 +404,14 @@ secMain:AddBind({
             start_aim_loop()
             OrionLib:MakeNotification({
                 Name = "Aimbot",
-                Content = "Aimbot aktiviert (Keybind)",
+                Content = "Aimbot aktiviert",
                 Time = 3
             })
         else
             stop_aim_loop()
             OrionLib:MakeNotification({
                 Name = "Aimbot",
-                Content = "Aimbot deaktiviert (Keybind)",
+                Content = "Aimbot deaktiviert",
                 Time = 3
             })
         end
@@ -497,7 +494,7 @@ secMain:AddBind({
 
     -- Filter
     secFilt:AddToggle({
-        Name = "Team Filter (Police <-> Citizen)",
+        Name = "Ignore Team",
         Default = CFG.TeamFilter.Enabled,
         Callback = function(v)
             CFG.TeamFilter.Enabled = v
