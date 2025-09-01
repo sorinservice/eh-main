@@ -181,7 +181,8 @@ local TABS = {
     Bypass   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
     Misc     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
     Player   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua",
-    Aimbot   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua?v1"
+    Aimbot   = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua?v1",
+    Locator  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/locator.lua?"
 }
 
 -- Loader-Helfer
@@ -249,6 +250,7 @@ attachTab("Graphics", TABS.Graphics, "main")
 attachTab("Player", TABS.Player,     "main")
 attachTab("Bypass",  TABS.Bypass,    "main")
 attachTab("Misc", TABS.Misc,         "main")
+attachTab("Locator", TABS.Locator,   "main")
 
 -- UI starten
 OrionLib:Init()
