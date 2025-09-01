@@ -2,11 +2,10 @@
 return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Vehicle Mod (dev-safe)
-    -- - To Vehicle (teleport beside seat, press ProximityPrompt, sit)
-    -- - Bring Vehicle (pivot near player, face player direction, sit)
-    -- - License plate override (local) with persistence
-    -- - Car Fly (keybind X, speed 10..190, safe fly every 6s)
-    -- - Mobile Fly panel (draggable)
+    -- - To Vehicle (teleport neben Sitz, Prompt drücken, sitzen)
+    -- - Bring Vehicle (vor dich, in Blickrichtung ausrichten, sitzen)
+    -- - License plate (lokal) mit Persistenz
+    -- - Car Fly (X, Speed 10..190, Safe-Fly alle 6s, Mobile-Panel)
     ----------------------------------------------------------------
 
     local Players      = game:GetService("Players")
@@ -18,16 +17,20 @@ return function(tab, OrionLib)
     local LP           = Players.LocalPlayer
     local Camera       = Workspace.CurrentCamera
 
-    -- Persistence (only license plate text, others are per-session)
+    -- kleine Helper
+    local function notify(title, msg, t)
+        OrionLib:MakeNotification({ Name = title, Content = msg, Time = t or 3 })
+    end
+
+    -- Persistenz (nur Kennzeichen)
     local SAVE_FOLDER = OrionLib and OrionLib.Folder or "SorinConfig"
-    local SAVE_FILE   = (SAVE_FOLDER .. "/vehicle.json")
+    local SAVE_FILE   = SAVE_FOLDER .. "/vehicle.json"
 
     local function safe_read_json(path)
         local ok, data = pcall(function()
             if isfile and isfile(path) then
                 return HttpService:JSONDecode(readfile(path))
             end
-            return nil
         end)
         return ok and data or nil
     end
@@ -48,27 +51,25 @@ return function(tab, OrionLib)
     local function save_cfg() safe_write_json(SAVE_FILE, { plateText = CFG.plateText }) end
 
     ----------------------------------------------------------------
-    -- Vehicle lookup helpers
+    -- Vehicle helpers
     ----------------------------------------------------------------
     local function VehiclesFolder()
         return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
     end
     local function myVehicleFolder()
-        local vRoot = VehiclesFolder()
-        if not vRoot then return nil end
-        local byName = vRoot:FindFirstChild(LP.Name)
+        local root = VehiclesFolder(); if not root then return nil end
+        local byName = root:FindFirstChild(LP.Name)
         if byName then return byName end
-        for _,m in ipairs(vRoot:GetChildren()) do
-            if m:IsA("Model") or m:IsA("Folder") then
-                local ownerAttr = (m.GetAttribute and m:GetAttribute("Owner")) or nil
-                if ownerAttr == LP.Name then return m end
+        for _,m in ipairs(root:GetChildren()) do
+            if (m:IsA("Model") or m:IsA("Folder")) and m.GetAttribute then
+                if m:GetAttribute("Owner") == LP.Name then return m end
             end
         end
         return nil
     end
     local function ensurePrimaryPart(model)
-        if model and model.PrimaryPart then return true end
         if not model then return false end
+        if model.PrimaryPart then return true end
         for _,d in ipairs(model:GetDescendants()) do
             if d:IsA("BasePart") then
                 pcall(function() model.PrimaryPart = d end)
@@ -94,20 +95,16 @@ return function(tab, OrionLib)
     end
     local function findDriverPrompt(vFolder)
         if not vFolder then return nil end
-        local nearest, best = nil, math.huge
         for _,pp in ipairs(vFolder:GetDescendants()) do
             if pp:IsA("ProximityPrompt") then
                 local a = string.lower(pp.ActionText or "")
                 local o = string.lower(pp.ObjectText or "")
                 if a:find("fahrer") or o:find("fahrer") or a:find("driver") or o:find("driver") or a:find("seat") or o:find("seat") then
-                    local pos = (pp.Parent and (pp.Parent.GetPivot and pp.Parent:GetPivot().Position))
-                              or (pp.Parent and pp.Parent.Position) or Vector3.zero
-                    local dist = (pos - pos).Magnitude -- zero, we just want the first reasonable one
-                    if dist < best then best = dist; nearest = pp end
+                    return pp
                 end
             end
         end
-        return nearest
+        return nil
     end
     local function pressPrompt(pp, tries)
         tries = tries or 8
@@ -132,43 +129,36 @@ return function(tab, OrionLib)
         local vf = myVehicleFolder()
         local pp = findDriverPrompt(vf)
         if pp then
-            local base = (pp.Parent and ((pp.Parent.GetPivot and pp.Parent:GetPivot()) or CFrame.new(pp.Parent.Position))) or CFrame.new(pp.Parent.Position)
-            char:WaitForChild("HumanoidRootPart").CFrame = base * CFrame.new(-1.2, 1.4, 0.2)
+            local baseCF = (pp.Parent and (pp.Parent.GetPivot and pp.Parent:GetPivot())) or (pp.Parent and CFrame.new(pp.Parent.Position)) or seat.CFrame
+            char:WaitForChild("HumanoidRootPart").CFrame = baseCF * CFrame.new(-1.2, 1.4, 0.2)
             task.wait(0.05)
             if pressPrompt(pp, 10) then return true end
         end
-        local ok = pcall(function() seat:Sit(hum) end)
-        if ok and seat.Occupant == hum then return true end
+        pcall(function() seat:Sit(hum) end)
+        if seat.Occupant == hum then return true end
         if hum.RootPart then
             hum:MoveTo(seat.Position + seat.CFrame.LookVector * -1)
             local t0 = time()
-            while time() - t0 < 1.2 do
-                task.wait()
-                if seat.Occupant == hum then return true end
-            end
+            while time() - t0 < 1.2 do task.wait(); if seat.Occupant == hum then return true end end
             hum.RootPart.CFrame = seat.CFrame * CFrame.new(0, 0.1, -0.2)
         end
         return seat.Occupant == hum
     end
 
     ----------------------------------------------------------------
-    -- Bring/To Vehicle
+    -- Actions: To / Bring
     ----------------------------------------------------------------
     local WARN_DISTANCE = 300
-    local TO_OFFSET     = CFrame.new(-2.0, 0.5, 0)  -- player warp beside seat
-    local BRING_OFFSET  = CFrame.new(0, 0, -3.5)    -- car appears in front of player
+    local TO_OFFSET     = CFrame.new(-2.0, 0.5, 0)
 
     local function toVehicle()
         local vf = myVehicleFolder()
         local seat = findDriveSeat(vf)
-        if not (vf and seat) then
-            OrionLib:MakeNotification({Name="Vehicle", Content="Kein eigenes Fahrzeug gefunden.", Time=3})
-            return
-        end
+        if not (vf and seat) then return notify("Vehicle","Kein eigenes Fahrzeug gefunden.") end
         local hrp = (LP.Character or LP.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
         local dist = (hrp.Position - seat.Position).Magnitude
         if dist > WARN_DISTANCE then
-            OrionLib:MakeNotification({Name="Vehicle", Content=("Achtung: weit entfernt (~%d studs)."):format(math.floor(dist)), Time=3})
+            notify("Vehicle", ("Achtung: weit entfernt (~%d studs)."):format(math.floor(dist)))
         end
         hrp.CFrame = seat.CFrame * TO_OFFSET
         task.wait(0.05)
@@ -177,43 +167,38 @@ return function(tab, OrionLib)
 
     local function bringVehicle()
         local vf = myVehicleFolder()
-        local seat = findDriveSeat(vf)
-        if not (vf and seat) then
-            OrionLib:MakeNotification({Name="Vehicle", Content="Kein eigenes Fahrzeug gefunden.", Time=3})
-            return
-        end
-        local hrp = (LP.Character or LP.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
+        if not vf then return notify("Vehicle","Kein Fahrzeug gefunden.") end
         ensurePrimaryPart(vf)
-        local baseCF = hrp.CFrame
-        local targetCF = CFrame.lookAt( (baseCF * BRING_OFFSET).Position, (baseCF.Position + baseCF.LookVector) ) -- face where player looks
-        pcall(function() vf:PivotTo(targetCF) end)
-        task.wait(0.06)
-        sitIn(findDriveSeat(vf))
+        local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return notify("Vehicle","Kein HRP gefunden.") end
+        local look = hrp.CFrame.LookVector
+        local pos  = hrp.Position + look * 10 + Vector3.new(0, 2, 0)
+        local cf   = CFrame.lookAt(pos, pos + look)
+        pcall(function() vf:PivotTo(cf) end)
+        task.wait() -- minimale settle time
+        local seat = findDriveSeat(vf)
+        if seat then sitIn(seat) end
     end
 
     ----------------------------------------------------------------
-    -- License plate (local only)
+    -- License plate (local)
     ----------------------------------------------------------------
     local function applyPlateTextTo(vFolder, txt)
-        if not vFolder or not txt or txt == "" then return end
-        local back = vFolder:FindFirstChild("LicensePlates", true) or vFolder:FindFirstChild("LicencePlates", true)
+        if not vFolder or txt == "" then return end
+        local plates = vFolder:FindFirstChild("LicensePlates", true) or vFolder:FindFirstChild("LicencePlates", true)
         local function setLabel(container)
             if not container then return end
             local gui = container:FindFirstChild("Gui", true)
             if gui and gui:FindFirstChild("TextLabel") then
-                local tl = gui.TextLabel
-                pcall(function() tl.Text = txt end)
+                pcall(function() gui.TextLabel.Text = txt end)
             end
         end
-        if back then
-            setLabel(back:FindFirstChild("Back", true))
-            setLabel(back:FindFirstChild("Front", true))
+        if plates then
+            setLabel(plates:FindFirstChild("Back", true))
+            setLabel(plates:FindFirstChild("Front", true))
         else
-            -- fallback: search any TextLabel named-like
             for _,d in ipairs(vFolder:GetDescendants()) do
-                if d:IsA("TextLabel") and (d.Name == "TextLabel") then
-                    pcall(function() d.Text = txt end)
-                end
+                if d:IsA("TextLabel") then pcall(function() d.Text = txt end) end
             end
         end
     end
@@ -221,144 +206,141 @@ return function(tab, OrionLib)
         local vf = myVehicleFolder()
         if vf and CFG.plateText ~= "" then
             applyPlateTextTo(vf, CFG.plateText)
-            OrionLib:MakeNotification({Name="Vehicle", Content="Kennzeichen angewandt (lokal).", Time=2})
+            notify("Vehicle","Kennzeichen angewandt (lokal).",2)
         else
-            OrionLib:MakeNotification({Name="Vehicle", Content="Kein Fahrzeug oder leerer Text.", Time=2})
+            notify("Vehicle","Kein Fahrzeug oder leerer Text.",2)
         end
     end
 
-----------------------------------------------------------------
--- Car Fly (anchored, collisionless while flying)
-----------------------------------------------------------------
-local flyEnabled  = false
-local flySpeed    = 60      -- adjustable 10..190
-local safeFly     = false
-local flyConn     = nil
-local safeTick    = 0
+    ----------------------------------------------------------------
+    -- Car Fly (anchored, nocollide while flying) + snapback & debounce
+    ----------------------------------------------------------------
+    local flyEnabled  = false
+    local flySpeed    = 130 -- default
+    local safeFly     = false
+    local flyConn     = nil
+    local safeTick    = 0
+    local toggleCooldown = 0
+    local lastAirCF   = nil
+    local savedFlags  = {}  -- [BasePart] = {Anchored, CanCollide}
 
--- we remember original physics flags to restore after flight
-local savedFlags = {}  -- [BasePart] = {Anchored=bool, CanCollide=bool}
-
-local function forEachPart(vf, fn)
-    if not vf then return end
-    for _,p in ipairs(vf:GetDescendants()) do
-        if p:IsA("BasePart") then fn(p) end
-    end
-end
-
-local function getVehicleRoot()
-    local vf = myVehicleFolder()
-    if not vf then return nil end
-    ensurePrimaryPart(vf)
-    return vf
-end
-
-local function setFlightPhysics(vf, on)
-    if not vf then return end
-    if on then
-        savedFlags = {}
-        forEachPart(vf, function(bp)
-            savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
-            bp.Anchored   = true       -- freeze physics so PivotTo is absolute
-            bp.CanCollide = false      -- prevent “sticking” to ground
-        end)
-    else
-        for bp,flags in pairs(savedFlags) do
-            if bp and bp.Parent then
-                bp.Anchored   = flags.Anchored
-                bp.CanCollide = flags.CanCollide
-            end
+    local function forEachPart(vf, fn)
+        if not vf then return end
+        for _,p in ipairs(vf:GetDescendants()) do
+            if p:IsA("BasePart") then fn(p) end
         end
-        savedFlags = {}
     end
-end
-
-local function toggleFly(state)
-    if state == nil then state = not flyEnabled end
-    if state == flyEnabled then return end
-    flyEnabled = state
-
-    if flyConn then flyConn:Disconnect(); flyConn = nil end
-
-    local vf = getVehicleRoot()
-    if not vf then
-        flyEnabled = false
-        OrionLib:MakeNotification({Name="Car Fly", Content="Kein Fahrzeug gefunden.", Time=2})
-        return
+    local function getVehicleRoot()
+        local vf = myVehicleFolder(); if not vf then return nil end
+        ensurePrimaryPart(vf); return vf
     end
-
-    if not flyEnabled then
-        setFlightPhysics(vf, false)
-        OrionLib:MakeNotification({Name="Car Fly", Content="Deaktiviert.", Time=2})
-        return
-    end
-
-    setFlightPhysics(vf, true)  -- anchor & nocollide during flight
-    OrionLib:MakeNotification({Name="Car Fly", Content="Aktiviert (X zum togglen).", Time=2})
-
-    local lastCF = vf:GetPivot()
-    safeTick = 0
-
-    flyConn = RunService.RenderStepped:Connect(function(dt)
-        if not flyEnabled then return end
-        local vf2 = getVehicleRoot()
-        if not vf2 then return end
-
-        local rootCF = vf2:GetPivot()
-        lastCF = rootCF
-
-        -- build direction (WASD + E up / Q down; also Space up / LeftControl down)
-        local dir = Vector3.zero
-        if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
-        if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
-        if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
-
-        if dir.Magnitude > 0 then
-            dir = dir.Unit
-            local step = dir * (flySpeed * dt)
-            local newPos = rootCF.Position + step
-            local lookAt = newPos + (Camera.CFrame.LookVector)
-            local newCF  = CFrame.lookAt(newPos, lookAt)
-            pcall(function() vf2:PivotTo(newCF) end)
-            lastCF = newCF
-        end
-
-        -- Safe Fly: tap ground every ~6s then return up
-        if safeFly then
-            safeTick += dt
-            if safeTick >= 6 then
-                safeTick = 0
-                -- briefly allow collisions just to “touch”
-                setFlightPhysics(vf2, false)
-                local rayParams = RaycastParams.new()
-                rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-                rayParams.FilterDescendantsInstances = {vf2}
-                local from = vf2:GetPivot().Position
-                local hit = Workspace:Raycast(from, Vector3.new(0,-1000,0), rayParams)
-                if hit then
-                    local groundCF = CFrame.new(hit.Position + Vector3.new(0, 2, 0), hit.Position + Vector3.new(0,2,0) + Camera.CFrame.LookVector)
-                    pcall(function() vf2:PivotTo(groundCF) end)
+    local function setFlightPhysics(vf, on)
+        if not vf then return end
+        if on then
+            savedFlags = {}
+            forEachPart(vf, function(bp)
+                savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
+                bp.Anchored   = true
+                bp.CanCollide = false
+            end)
+        else
+            for bp,flags in pairs(savedFlags) do
+                if bp and bp.Parent then
+                    bp.Anchored   = flags.Anchored
+                    bp.CanCollide = flags.CanCollide
+                    local vel = bp.AssemblyLinearVelocity
+                    bp.AssemblyLinearVelocity = Vector3.new(vel.X, math.min(vel.Y, -2), vel.Z)
                 end
-                task.wait(0.5)
-                setFlightPhysics(vf2, true)
-                if lastCF then pcall(function() vf2:PivotTo(lastCF) end) end
+            end
+            savedFlags = {}
+        end
+    end
+    local function toggleFly(state)
+        if state == nil then state = not flyEnabled end
+        if state == flyEnabled then return end
+        flyEnabled = state
+
+        if flyConn then flyConn:Disconnect(); flyConn = nil end
+
+        local vf = getVehicleRoot()
+        if not vf then
+            flyEnabled = false
+            notify("Car Fly","Kein Fahrzeug gefunden.")
+            return
+        end
+
+        if not flyEnabled then
+            setFlightPhysics(vf, false)
+            notify("Car Fly","Deaktiviert.")
+            return
+        end
+
+        setFlightPhysics(vf, true)
+        lastAirCF = vf:GetPivot()
+        safeTick  = 0
+        notify("Car Fly", ("Aktiviert (Geschwindigkeit %d)"):format(flySpeed))
+
+        flyConn = RunService.RenderStepped:Connect(function(dt)
+            if not flyEnabled then return end
+            toggleCooldown = math.max(0, toggleCooldown - dt)
+
+            local vf2 = getVehicleRoot(); if not vf2 then return end
+            local rootCF = vf2:GetPivot(); lastAirCF = rootCF
+
+            local dir = Vector3.zero
+            if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
+            if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
+            if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
+            if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
+            if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+            if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+
+            if dir.Magnitude > 0 then
+                dir = dir.Unit
+                local step   = dir * (flySpeed * dt)
+                local newPos = rootCF.Position + step
+                local lookAt = newPos + Camera.CFrame.LookVector
+                local newCF  = CFrame.lookAt(newPos, lookAt)
+                pcall(function() vf2:PivotTo(newCF) end)
+                lastAirCF = newCF
+            end
+
+            if safeFly then
+                safeTick += dt
+                if safeTick >= 6 then
+                    safeTick = 0
+                    setFlightPhysics(vf2, false)
+                    local params = RaycastParams.new()
+                    params.FilterType = Enum.RaycastFilterType.Blacklist
+                    params.FilterDescendantsInstances = {vf2}
+                    local from = vf2:GetPivot().Position
+                    local hit = Workspace:Raycast(from, Vector3.new(0,-1000,0), params)
+                    if hit then
+                        local groundCF = CFrame.new(hit.Position + Vector3.new(0,2,0), hit.Position + Vector3.new(0,2,0) + Camera.CFrame.LookVector)
+                        pcall(function() vf2:PivotTo(groundCF) end)
+                    end
+                    task.wait(0.5)
+                    setFlightPhysics(vf2, true)
+                    if lastAirCF then pcall(function() vf2:PivotTo(lastAirCF) end) end
+                end
+            end
+        end)
+    end
+
+    -- Debounce für X
+    UserInput.InputBegan:Connect(function(inp, gpe)
+        if gpe then return end
+        if inp.KeyCode == Enum.KeyCode.X then
+            if toggleCooldown <= 0 then
+                toggleCooldown = 0.25
+                toggleFly()
             end
         end
     end)
-end
 
--- Keybind X for fly toggle
-UserInput.InputBegan:Connect(function(inp, gpe)
-    if gpe then return end
-    if inp.KeyCode == Enum.KeyCode.X then
-        toggleFly()
-    end
-end)
-
-    -- Mobile Fly Panel (simple / draggable)
+    ----------------------------------------------------------------
+    -- Mobile Fly Panel (drag)
+    ----------------------------------------------------------------
     local function spawnMobileFly()
         local gui = Instance.new("ScreenGui")
         gui.Name = "Sorin_MobileFly"
@@ -400,31 +382,13 @@ end)
             return b
         end
 
-        local tgl = mkBtn("Toggle", 10, 34, 60, 28, function() toggleFly() end)
-        local up  = mkBtn("Up",     80, 34, 60, 28, function()
-            local vf = getVehicleRoot(); if not vf then return end
-            local cf = vf:GetPivot(); vf:PivotTo(cf + Vector3.new(0, 3, 0))
-        end)
-        local dn  = mkBtn("Down",  150,34, 60, 28, function()
-            local vf = getVehicleRoot(); if not vf then return end
-            local cf = vf:GetPivot(); vf:PivotTo(cf + Vector3.new(0, -3, 0))
-        end)
-        mkBtn("<<",  10, 68, 60, 28, function()
-            local vf = getVehicleRoot(); if not vf then return end
-            local cf = vf:GetPivot(); vf:PivotTo(cf + (-Camera.CFrame.RightVector * 4))
-        end)
-        mkBtn(">>",  150,68,60, 28, function()
-            local vf = getVehicleRoot(); if not vf then return end
-            local cf = vf:GetPivot(); vf:PivotTo(cf + (Camera.CFrame.RightVector * 4))
-        end)
-        mkBtn("^",   80, 68, 60, 28, function()
-            local vf = getVehicleRoot(); if not vf then return end
-            local cf = vf:GetPivot(); vf:PivotTo(cf + (Camera.CFrame.LookVector * 6))
-        end)
-        mkBtn("v",   80, 102,60, 28, function()
-            local vf = getVehicleRoot(); if not vf then return end
-            local cf = vf:GetPivot(); vf:PivotTo(cf + (-Camera.CFrame.LookVector * 6))
-        end)
+        mkBtn("Toggle", 10, 34, 60, 28, function() toggleFly() end)
+        mkBtn("Up",     80, 34, 60, 28, function() local vf = getVehicleRoot(); if vf then vf:PivotTo(vf:GetPivot() + Vector3.new(0,3,0)) end end)
+        mkBtn("Down",   150,34, 60, 28, function() local vf = getVehicleRoot(); if vf then vf:PivotTo(vf:GetPivot() + Vector3.new(0,-3,0)) end end)
+        mkBtn("<<",     10, 68, 60, 28, function() local vf = getVehicleRoot(); if vf then vf:PivotTo(vf:GetPivot() + (-Camera.CFrame.RightVector * 4)) end end)
+        mkBtn(">>",     150,68,60, 28, function() local vf = getVehicleRoot(); if vf then vf:PivotTo(vf:GetPivot() + ( Camera.CFrame.RightVector * 4)) end end)
+        mkBtn("^",      80, 68, 60, 28, function() local vf = getVehicleRoot(); if vf then vf:PivotTo(vf:GetPivot() + ( Camera.CFrame.LookVector  * 6)) end end)
+        mkBtn("v",      80,102, 60, 28, function() local vf = getVehicleRoot(); if vf then vf:PivotTo(vf:GetPivot() + (-Camera.CFrame.LookVector * 6)) end end)
 
         -- drag
         local dragging, start, startPos
@@ -471,6 +435,11 @@ end)
     })
     secLP:AddButton({ Name = "Kennzeichen auf aktuelles Fahrzeug anwenden", Callback = applyPlateToCurrent })
 
+    secF:AddToggle({
+        Name = "Enable Car Fly",
+        Default = false,
+        Callback = function(v) toggleFly(v) end
+    })
     secF:AddBind({
         Name = "Car Fly Toggle Key",
         Default = Enum.KeyCode.X,
@@ -480,11 +449,11 @@ end)
     secF:AddSlider({
         Name = "Fly Speed",
         Min = 10, Max = 190, Increment = 5,
-        Default = flySpeed,
-        Callback = function(v) flySpeed = math.clamp(math.floor(v+0.5), 10, 190) end
+        Default = 130,
+        Callback = function(v) flySpeed = math.floor(v) end
     })
     secF:AddToggle({
-        Name = "Safe Fly (alle 6s kurz Bodenkontakt)",
+        Name = "Safe Fly (alle 6s Boden-Touch)",
         Default = false,
         Callback = function(v) safeFly = v end
     })
@@ -495,11 +464,10 @@ end)
         Callback = function(v) if MobileFlyGui then MobileFlyGui.Enabled = v end end
     })
 
-    -- auto-apply plate after (re)spawn if user saved one
+    -- Kennzeichen nach Spawn automatisch anwenden (falls gesetzt)
     task.defer(function()
         if CFG.plateText ~= "" then
-            -- small delay to let vehicle spawn
-            task.wait(1.0)
+            task.wait(1)
             pcall(applyPlateToCurrent)
         end
     end)
