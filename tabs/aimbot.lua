@@ -1,13 +1,8 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
-    ----------------------------------------------------------------
-    -- SorinHub Aimbot (Executor-freundlich)
-    -- - FOV-Kreis als GUI (kein Drawing-Zwang)
-    -- - BindToRenderStep nach der Kamera (funktioniert auch bei Track/Follow)
-    -- - Hold-Aim (RMB) mit Aggressions-Regler (0.1..1.0  =>  höher = aggressiver)
-    -- - Team-Filter (Police <-> Citizen), optional
-    -- - Mobile-Panel (verschiebbar) mit Aimbot/Prediction Toggle
-    -- - Persistenz über writefile/readfile  (SorinConfig/aimbot.json)
+    print("[SorinHub] Aimbot stable success")
+
+
     ----------------------------------------------------------------
 
     -----------------------------
