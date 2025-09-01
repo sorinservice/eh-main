@@ -1,35 +1,42 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
-    print("Probier doch mal Bongo Cat. Kostenlos auf Steam")
-    -- Services
+    -- sanity print to confirm correct version loaded
+    print("[SorinHub] aimbot_tab v1.0 loaded")
+
+    --// Services
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local UserInputService = game:GetService("UserInputService")
     local LocalPlayer = Players.LocalPlayer
 
-    -- Safe executor feature checks
+    --// Optional executor features (guarded)
     local hasDrawing = (typeof(Drawing) == "table" or typeof(Drawing) == "userdata") and typeof(Drawing.new) == "function"
     local canMouseClick = (typeof(mouse1click) == "function") or (typeof(mouse1press) == "function" and typeof(mouse1release) == "function")
 
-    -- Settings
+    --// Settings
     local aimbotSettings = {
         Enabled       = false,
         Keybind       = Enum.KeyCode.Q,
+
         Prediction    = true,
         AimPart       = "Head",
         IgnoreTeam    = true,
-        FOVColor      = Color3.fromRGB(255, 0, 0),
-        MaxDistance   = 1000,          -- Studs (world distance)
-        Smoothness    = 0.5,           -- 0.1 = fast snap, 1.0 = very slow
+
         FOVVisible    = true,
-        FOVRadius     = 100,           -- Pixels (screen distance)
+        FOVRadius     = 100,                 -- pixels
+        FOVColor      = Color3.fromRGB(255, 0, 0),
+
+        MaxDistance   = 1000,                -- studs (world distance)
+        Smoothness    = 0.5,                 -- 0.1 fast / 1.0 very slow
+
         WallCheck     = false,
-        VisibleCheck  = true,          -- Require target point to be on screen
+        VisibleCheck  = true,                -- require target point to be on-screen
+
         Triggerbot    = false,
         TriggerbotKey = Enum.KeyCode.E
     }
 
-    -- FOV Circle (Drawing guarded)
+    --// FOV circle (only if executor Drawing API exists)
     local FOVCircle = nil
     if hasDrawing then
         FOVCircle = Drawing.new("Circle")
@@ -41,19 +48,19 @@ return function(tab, OrionLib)
         FOVCircle.Transparency = 1
     end
 
-    -- State
+    --// State
     local aimbotConn, infoConn
     local targetPlayer = nil
     local isAiming = false
 
-    -- Helpers
+    --// Helpers
     local function updateFOV()
         if not FOVCircle then return end
-        local mousePos = UserInputService:GetMouseLocation()
-        FOVCircle.Visible   = aimbotSettings.FOVVisible
-        FOVCircle.Color     = aimbotSettings.FOVColor
-        FOVCircle.Radius    = aimbotSettings.FOVRadius
-        FOVCircle.Position  = Vector2.new(mousePos.X, mousePos.Y)
+        local mp = UserInputService:GetMouseLocation()
+        FOVCircle.Visible  = aimbotSettings.FOVVisible
+        FOVCircle.Color    = aimbotSettings.FOVColor
+        FOVCircle.Radius   = aimbotSettings.FOVRadius
+        FOVCircle.Position = Vector2.new(mp.X, mp.Y)
     end
 
     local function isPartVisible(part)
@@ -68,15 +75,15 @@ return function(tab, OrionLib)
 
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = {char}
+        params.FilterDescendantsInstances = { char }
         params.IgnoreWater = true
 
         local result = workspace:Raycast(origin, direction, params)
         if result then
-            -- If we hit something, visibility is only true when the hit lies within the target's character
+            -- visible only if the first hit lies within the target character
             return result.Instance:IsDescendantOf(part.Parent)
         end
-        -- No hit: assume clear LOS to target point
+        -- no obstruction hit; assume clear LOS
         return true
     end
 
@@ -86,7 +93,7 @@ return function(tab, OrionLib)
         end
         local cam = workspace.CurrentCamera
         if not cam then return targetPart.Position end
-        -- Very simple linear prediction; tune projectileSpeed to your weapon
+        -- adjust projectileSpeed for your weapon if you have one
         local projectileSpeed = 2000
         local distance = (targetPart.Position - cam.CFrame.Position).Magnitude
         local travelTime = distance / projectileSpeed
@@ -99,7 +106,7 @@ return function(tab, OrionLib)
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
         if not (cam and myRoot) then return nil end
 
-        local mousePos = UserInputService:GetMouseLocation()
+        local mp = UserInputService:GetMouseLocation()
         local bestPlayer, bestScreenDist = nil, math.huge
 
         for _, plr in ipairs(Players:GetPlayers()) do
@@ -107,12 +114,12 @@ return function(tab, OrionLib)
                 local char = plr.Character
                 local hum  = char and char:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health > 0 then
-                    -- Team gate
+                    -- team filter
                     if aimbotSettings.IgnoreTeam and plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then
                         goto continue
                     end
 
-                    -- pick aim part
+                    -- choose aim part
                     local part = char:FindFirstChild(aimbotSettings.AimPart) or char:FindFirstChild("HumanoidRootPart")
                     if not part then goto continue end
 
@@ -122,17 +129,17 @@ return function(tab, OrionLib)
                         goto continue
                     end
 
-                    -- wall / LOS
+                    -- wall/LOS
                     if aimbotSettings.WallCheck and not isPartVisible(part) then
                         goto continue
                     end
 
-                    local screenPoint, onScreen = cam:WorldToViewportPoint(part.Position)
+                    local sp, onScreen = cam:WorldToViewportPoint(part.Position)
                     if aimbotSettings.VisibleCheck and not onScreen then
                         goto continue
                     end
 
-                    local screenDist = (Vector2.new(mousePos.X, mousePos.Y) - Vector2.new(screenPoint.X, screenPoint.Y)).Magnitude
+                    local screenDist = (Vector2.new(mp.X, mp.Y) - Vector2.new(sp.X, sp.Y)).Magnitude
                     if screenDist <= aimbotSettings.FOVRadius and screenDist < bestScreenDist then
                         bestScreenDist = screenDist
                         bestPlayer = plr
@@ -172,9 +179,7 @@ return function(tab, OrionLib)
             if typeof(mouse1click) == "function" then
                 mouse1click()
             elseif typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
-                mouse1press()
-                task.wait() -- one frame
-                mouse1release()
+                mouse1press(); task.wait(); mouse1release()
             end
         end
     end
@@ -193,16 +198,12 @@ return function(tab, OrionLib)
             local cam = workspace.CurrentCamera
             if not cam then return end
 
-            if aimbotSettings.Enabled then
-                local closest = getClosestPlayer()
-                if closest then
-                    targetPlayer = closest
-                    aimAt(closest)
-                    isAiming = true
-                    triggerbotTick()
-                else
-                    isAiming, targetPlayer = false, nil
-                end
+            local closest = getClosestPlayer()
+            if closest then
+                targetPlayer = closest
+                aimAt(closest)
+                isAiming = true
+                triggerbotTick()
             else
                 isAiming, targetPlayer = false, nil
             end
@@ -210,7 +211,7 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- UI (Orion: matches your API: AddToggle / AddBind / AddDropdown / AddSlider / AddColorpicker)
+    -- UI (Orion: AddToggle / AddBind / AddDropdown / AddSlider / AddColorpicker)
     ----------------------------------------------------------------
 
     local MainSection = tab:AddSection({ Name = "Aimbot" })
@@ -336,9 +337,7 @@ return function(tab, OrionLib)
         Name = "Triggerbot Key",
         Default = aimbotSettings.TriggerbotKey,
         Hold = true,
-        Callback = function(holding)
-            -- No toggle logic here; we poll IsKeyDown each frame when Enabled
-        end
+        Callback = function(_) end -- we poll IsKeyDown each frame
     })
 
     -- Status UI
@@ -367,7 +366,7 @@ return function(tab, OrionLib)
         end
     end)
 
-    -- No tab:OnClose in your Orion; expose a tiny cleanup toggle
+    -- Maintenance
     local CleanupSection = tab:AddSection({ Name = "Maintenance" })
     CleanupSection:AddButton({
         Name = "Stop Aimbot & Cleanup",
