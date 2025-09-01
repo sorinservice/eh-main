@@ -1,193 +1,197 @@
 -- tabs/misc.lua
--- Misc features for SorinHub
+-- SorinHub Misc (nur für DEIN Spiel / private Tests!)
+-- - Respawn & Inventar leeren
+-- - Anti-FallDamage (HipHeight-Cushion, sanft, kein Velocity-Hack)
+-- - Anti-Arrest (Teleport weg von Police, wenn nicht im Fahrzeug)
+-- - Anti-Taser (State/PlatformStand/Constraints/Anim-Stop)
+-- Hinweis: Enthält Debug-Prints, um echte Taser/Fall-Mechanik zu erkennen.
 
 return function(tab, OrionLib)
-    ----------------------------------------------------------------
+    ------------------------------------------
     -- Services
-    ----------------------------------------------------------------
-    local Players     = game:GetService("Players")
-    local RunService  = game:GetService("RunService")
-    local Workspace   = game:GetService("Workspace")
-    local LP          = Players.LocalPlayer
+    ------------------------------------------
+    local Players    = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local Collection = game:GetService("CollectionService")
+    local LP         = Players.LocalPlayer
 
-    ----------------------------------------------------------------
-    -- State
-    ----------------------------------------------------------------
-    local state = {
-        -- Anti Fall
-        antiFallEnabled   = false,
-        fall_probeDist    = 12,   -- ab dieser Bodennähe eingreifen (Studs)
-        fall_maxStep      = 2.5,  -- maximale Abwärtsbewegung je Frame
-        fall_safeOffset   = 2.5,  -- über Boden "auflanden"
+    ------------------------------------------
+    -- Hardcoded Settings (keine Slider)
+    ------------------------------------------
+    -- Anti-Fall
+    local FALL_PROBE_DIST   = 12.0   -- Bodennähe, ab der gepuffert wird (Studs)
+    local FALL_SAFE_OFFSET  = 2.4    -- Ziel-Höhe über Boden (HipHeight / “Schwebekante”)
+    local FALL_RELAX_SPEED  = 0.35   -- wie schnell HipHeight wieder normalisiert
 
-        -- Anti Arrest
-        antiArrestEnabled = false,
-        arrest_radius     = 12,   -- Distanz Polizist -> Spieler
-        arrest_teleport   = 15,   -- Teleport-Offset (Studs)
+    -- Anti-Arrest
+    local ARREST_RADIUS     = 12     -- Erkennungsradius (Studs)
+    local ARREST_TELEPORT   = 15     -- Teleport-Offset (Studs)
 
-        -- Anti Taser
-        antiTaserEnabled  = false,
-    }
+    -- Anti-Taser
+    local TASER_MAX_RECOVER = 0.30   -- kurze Sperre, um Spam zu vermeiden (Sek.)
+    local DEFAULT_WALKSPEED = 16     -- Nur als Fallback, wird nicht “fest” überschrieben
 
-    ----------------------------------------------------------------
-    -- Helpers
-    ----------------------------------------------------------------
-    local function getHumanoid(char)
-        return char and char:FindFirstChildOfClass("Humanoid")
-    end
-    local function getHRP(char)
-        return char and char:FindFirstChild("HumanoidRootPart")
-    end
+    ------------------------------------------
+    -- UI (nur Toggles)
+    ------------------------------------------
+    local secResp = tab:AddSection({ Name = "Respawn" })
+    local secFall = tab:AddSection({ Name = "Anti FallDamage" })
+    local secArr  = tab:AddSection({ Name = "Anti Arrest" })
+    local secTas  = tab:AddSection({ Name = "Anti Taser" })
 
-    local function rayDown(origin, dist, ignore)
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = ignore or {}
-        local result = Workspace:Raycast(origin, Vector3.new(0, -dist, 0), params)
-        if result then
-            return result.Position, result.Instance, result.Normal, (origin.Y - result.Position.Y)
-        end
-        return nil
-    end
-
-    ----------------------------------------------------------------
-    -- Respawn Button
-    ----------------------------------------------------------------
-    tab:AddButton({
+    -- Respawn-Button (aus deinem alten Tab)
+    secResp:AddButton({
         Name = "Respawn (lose all weapons/tools)",
         Callback = function()
             local function nukeTools(container)
                 if not container then return end
-                for _, inst in ipairs(container:GetChildren()) do
-                    if inst:IsA("Tool") then
-                        pcall(function() inst:Destroy() end)
-                    end
+                for _,inst in ipairs(container:GetChildren()) do
+                    if inst:IsA("Tool") then pcall(function() inst:Destroy() end) end
                 end
             end
             nukeTools(LP:FindFirstChild("Backpack"))
             nukeTools(LP.Character)
 
-            local hum = getHumanoid(LP.Character)
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
             if hum then
                 hum.Health = 0
-                OrionLib:MakeNotification({
-                    Name = "Utility",
-                    Content = "Respawn requested (inventory cleared).",
-                    Time = 3
-                })
+                OrionLib:MakeNotification({ Name="Utility", Content="Respawn requested (inventory cleared).", Time=3 })
             else
-                OrionLib:MakeNotification({
-                    Name = "Utility",
-                    Content = "No humanoid found; try rejoining if respawn fails.",
-                    Time = 4
-                })
+                OrionLib:MakeNotification({ Name="Utility", Content="No humanoid found; try rejoining if respawn fails.", Time=4 })
             end
         end
     })
     tab:AddParagraph("Note", "This forces a respawn and deletes all Tools from your Backpack.")
 
-    ----------------------------------------------------------------
-    -- Anti-FallDamage (CFrame Ladder)
-    ----------------------------------------------------------------
-    local secFall = tab:AddSection({ Name = "Anti Fall Damage" })
+    -- Toggles
+    local antiFallEnabled   = false
+    local antiArrestEnabled = false
+    local antiTaserEnabled  = false
+
     secFall:AddToggle({
         Name = "Enable Anti-FallDamage",
         Default = false,
-        Callback = function(v) state.antiFallEnabled = v end
+        Callback = function(v) antiFallEnabled = v end
     })
-    secFall:AddSlider({
-        Name = "Trigger Distance (to ground)",
-        Min = 6, Max = 30, Increment = 1, Default = state.fall_probeDist,
-        ValueName = "studs",
-        Callback = function(v) state.fall_probeDist = math.floor(v) end
+    secArr:AddToggle({
+        Name = "Enable Anti-Arrest",
+        Default = false,
+        Callback = function(v) antiArrestEnabled = v end
     })
-    secFall:AddSlider({
-        Name = "Max Drop/Frame",
-        Min = 1.0, Max = 5.0, Increment = 0.25, Default = state.fall_maxStep,
-        ValueName = "studs",
-        Callback = function(v) state.fall_maxStep = tonumber(string.format("%.2f", v)) end
-    })
-    secFall:AddSlider({
-        Name = "Safe Offset above ground",
-        Min = 1.5, Max = 4.0, Increment = 0.25, Default = state.fall_safeOffset,
-        ValueName = "studs",
-        Callback = function(v) state.fall_safeOffset = tonumber(string.format("%.2f", v)) end
+    secTas:AddToggle({
+        Name = "Enable Anti-Taser",
+        Default = false,
+        Callback = function(v) antiTaserEnabled = v end
     })
 
-    local function fallTick(dt)
-        if not state.antiFallEnabled then return end
-        local char = LP.Character
-        local hum  = getHumanoid(char)
-        local hrp  = getHRP(char)
-        if not (hum and hrp) then return end
+    ------------------------------------------
+    -- Helpers
+    ------------------------------------------
+    local function HumanoidFromChar(char)
+        return char and char:FindFirstChildOfClass("Humanoid")
+    end
+    local function HRP(char)
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+    local function InVehicle(hum)
+        if not hum then return false end
+        return hum.Sit or hum.SeatPart ~= nil
+    end
+    local function MyTeamName(plr)
+        local t = plr.Team
+        return t and t.Name or nil
+    end
 
-        local st = hum:GetState()
-        if st ~= Enum.HumanoidStateType.Freefall and st ~= Enum.HumanoidStateType.FallingDown then
+    local function RayDown(origin, dist, ignore)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = ignore or {}
+        local result = workspace:Raycast(origin, Vector3.new(0, -dist, 0), params)
+        if result then
+            local gap = origin.Y - result.Position.Y
+            return result, gap
+        end
+        return nil, nil
+    end
+
+    ------------------------------------------
+    -- Anti-FallDamage (HipHeight-Cushion)
+    ------------------------------------------
+    local hipTarget     = nil       -- Ziel-HipHeight während Dämpfung
+    local lastGroundGap = nil       -- nur fürs Debug
+    local baseHipHeight = nil       -- merken & sanft zurück
+
+    local function AntiFallTick(dt)
+        if not antiFallEnabled then
+            -- sauber zurück
+            local hum = HumanoidFromChar(LP.Character)
+            if hum and baseHipHeight then
+                hum.HipHeight = hum.HipHeight + (baseHipHeight - hum.HipHeight) * math.clamp(dt * 4, 0, 1)
+            end
+            hipTarget = nil
             return
         end
 
-        local hitPos, _, _, dist = rayDown(hrp.Position, math.max(6, state.fall_probeDist + 8), {char})
-        if not hitPos then return end
+        local char = LP.Character
+        local hum  = HumanoidFromChar(char)
+        local hrp  = HRP(char)
+        if not (hum and hrp) then return end
 
-        local gap = (hrp.Position.Y - hitPos.Y)
-        if gap <= state.fall_probeDist then
-            local targetY = hitPos.Y + state.fall_safeOffset
-            if hrp.Position.Y - targetY > 0 then
-                local step = math.min(state.fall_maxStep, hrp.Position.Y - targetY)
-                local pos = hrp.Position
-                hrp.CFrame = CFrame.new(pos.X, pos.Y - step, pos.Z, hrp.CFrame:components())
-                if (hrp.Position.Y - targetY) <= 0.6 then
-                    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Landed) end)
-                end
+        if baseHipHeight == nil then
+            baseHipHeight = hum.HipHeight
+        end
+
+        local state = hum:GetState()
+        if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.FallingDown then
+            -- relax Richtung baseline
+            if hipTarget == nil and baseHipHeight then
+                hum.HipHeight = hum.HipHeight + (baseHipHeight - hum.HipHeight) * math.clamp(dt / math.max(0.0001, (1 - FALL_RELAX_SPEED)), 0, 1)
+            end
+            return
+        end
+
+        local result, gap = RayDown(hrp.Position, FALL_PROBE_DIST + 10, {char})
+        lastGroundGap = gap
+        if result and gap and gap <= FALL_PROBE_DIST then
+            -- halte ~FALL_SAFE_OFFSET über Boden
+            hipTarget = FALL_SAFE_OFFSET
+            -- nähere HipHeight sanft an hipTarget an
+            hum.HipHeight = hum.HipHeight + (hipTarget - hum.HipHeight) * math.clamp(dt * 20, 0, 1)
+            -- kurze “Landung” sobald wir sehr nahe sind
+            if gap <= (FALL_SAFE_OFFSET + 0.3) then
+                pcall(function() hum:ChangeState(Enum.HumanoidStateType.Landed) end)
+            end
+        else
+            hipTarget = nil
+            -- während Freefall, aber weit weg vom Boden: HipHeight langsam Richtung baseline
+            if baseHipHeight then
+                hum.HipHeight = hum.HipHeight + (baseHipHeight - hum.HipHeight) * math.clamp(dt * 1.5, 0, 1)
             end
         end
     end
 
-    ----------------------------------------------------------------
-    -- Anti-Arrest
-    ----------------------------------------------------------------
-    local secArrest = tab:AddSection({ Name = "Anti Arrest" })
-    secArrest:AddToggle({
-        Name = "Enable Anti-Arrest",
-        Default = false,
-        Callback = function(v) state.antiArrestEnabled = v end
-    })
-    secArrest:AddSlider({
-        Name = "Detect Radius",
-        Min = 6, Max = 25, Increment = 1, Default = state.arrest_radius,
-        ValueName = "studs",
-        Callback = function(v) state.arrest_radius = math.floor(v) end
-    })
-    secArrest:AddSlider({
-        Name = "Teleport Offset",
-        Min = 10, Max = 30, Increment = 1, Default = state.arrest_teleport,
-        ValueName = "studs",
-        Callback = function(v) state.arrest_teleport = math.floor(v) end
-    })
-
-    local function arrestTick(dt)
-        if not state.antiArrestEnabled then return end
+    ------------------------------------------
+    -- Anti-Arrest (Police näher als ARREST_RADIUS)
+    ------------------------------------------
+    local function AntiArrestTick(dt)
+        if not antiArrestEnabled then return end
         local char = LP.Character
-        local hrp  = getHRP(char)
-        if not hrp then return end
+        local hum  = HumanoidFromChar(char)
+        local hrp  = HRP(char)
+        if not (hum and hrp) then return end
+        if InVehicle(hum) then return end
 
         for _,plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LP and plr.Team and plr.Team.Name == "Police" then
-                local phrp = getHRP(plr.Character)
+            if plr ~= LP and MyTeamName(plr) == "Police" then
+                local phrp = HRP(plr.Character)
                 if phrp then
                     local dist = (phrp.Position - hrp.Position).Magnitude
-                    if dist <= state.arrest_radius then
-                        local offset = Vector3.new(
-                            (math.random() > 0.5 and 1 or -1) * state.arrest_teleport,
-                            0,
-                            (math.random() > 0.5 and 1 or -1) * state.arrest_teleport
-                        )
-                        hrp.CFrame = hrp.CFrame + offset
-                        OrionLib:MakeNotification({
-                            Name = "Anti-Arrest",
-                            Content = "Teleported away from nearby Police.",
-                            Time = 2
-                        })
+                    if dist <= ARREST_RADIUS then
+                        -- Teleport leicht diagonal (pseudo-zufällig)
+                        local dx = (math.random() > 0.5 and 1 or -1) * ARREST_TELEPORT
+                        local dz = (math.random() > 0.5 and 1 or -1) * ARREST_TELEPORT
+                        hrp.CFrame = hrp.CFrame + Vector3.new(dx, 0, dz)
+                        OrionLib:MakeNotification({ Name="Anti-Arrest", Content="Teleported away from Police proximity.", Time=2 })
                         break
                     end
                 end
@@ -195,35 +199,120 @@ return function(tab, OrionLib)
         end
     end
 
-    ----------------------------------------------------------------
-    -- Anti-Taser
-    ----------------------------------------------------------------
-    local secTaser = tab:AddSection({ Name = "Anti Taser" })
-    secTaser:AddToggle({
-        Name = "Enable Anti-Taser",
-        Default = false,
-        Callback = function(v) state.antiTaserEnabled = v end
-    })
+    ------------------------------------------
+    -- Anti-Taser (mehrgleisig)
+    -- Wir beobachten:
+    --  - Humanoid.StateChanged / PlatformStand
+    --  - neue Constraints (Ragdoll/Hinge/BallSocket)
+    --  - Animationen (falls “tase”/“stun” im Name/Id)
+    --  - “Unstuck”-Fallback: Sitz/Anchor/WalkSpeed-Minimum
+    ------------------------------------------
+    local lastRecover = 0
+    local charConn = {}
+    local function disconnectCharConns()
+        for _,c in ipairs(charConn) do pcall(function() c:Disconnect() end) end
+        table.clear(charConn)
+    end
 
-    local function taserTick(dt)
-        if not state.antiTaserEnabled then return end
-        local hum = getHumanoid(LP.Character)
+    local function onCharacterAdded(char)
+        disconnectCharConns()
+        if not char then return end
+
+        -- State watcher
+        local hum = HumanoidFromChar(char)
         if hum then
-            if hum.PlatformStand then
-                hum.PlatformStand = false
+            table.insert(charConn, hum.StateChanged:Connect(function(_, new)
+                if not antiTaserEnabled then return end
+                if new == Enum.HumanoidStateType.Physics or new == Enum.HumanoidStateType.Ragdoll then
+                    print("[AntiTaser] Humanoid state:", new.Name, " => clearing PlatformStand")
+                    hum.PlatformStand = false
+                    hum.Sit = false
+                end
+            end))
+        end
+
+        -- Descendant watcher (Constraints/Tags/Animations)
+        table.insert(charConn, char.DescendantAdded:Connect(function(inst)
+            if not antiTaserEnabled then return end
+            -- Ragdoll-Constraints
+            if inst:IsA("BallSocketConstraint") or inst:IsA("HingeConstraint") or inst:IsA("AngularVelocity") then
+                local n = (inst.Name or ""):lower()
+                if n:find("ragdoll") or n:find("tase") or n:find("stun") then
+                    print("[AntiTaser] Removing constraint:", inst.ClassName, inst.Name)
+                    pcall(function() inst:Destroy() end)
+                end
             end
-            if hum.Sit then
-                hum.Sit = false
+            -- Bool/Value Tags
+            if inst:IsA("BoolValue") or inst:IsA("StringValue") then
+                local n = (inst.Name or ""):lower()
+                if n:find("stun") or n:find("tase") then
+                    print("[AntiTaser] Clearing tag:", inst.Name)
+                    pcall(function() inst:Destroy() end)
+                end
+            end
+            -- AnimationTrack-Stop (Heuristik)
+            if inst:IsA("Animation") then
+                local id = tostring(inst.AnimationId or ""):lower()
+                if id:find("tase") or id:find("stun") then
+                    print("[AntiTaser] Found Animation with 'tase/stun':", inst.AnimationId)
+                    local animator = hum and (hum:FindFirstChildOfClass("Animator"))
+                    if animator then
+                        for _,track in ipairs(animator:GetPlayingAnimationTracks()) do
+                            local tid = tostring(track.Animation.AnimationId or ""):lower()
+                            if tid:find("tase") or tid:find("stun") then
+                                print("[AntiTaser] Stopping track:", tid)
+                                pcall(function() track:Stop(0) end)
+                            end
+                        end
+                    end
+                end
+            end
+        end))
+    end
+
+    -- init char hooks
+    onCharacterAdded(LP.Character)
+    LP.CharacterAdded:Connect(onCharacterAdded)
+
+    local function AntiTaserTick(dt)
+        if not antiTaserEnabled then return end
+        local char = LP.Character
+        local hum  = HumanoidFromChar(char)
+        local hrp  = HRP(char)
+        if not (hum and hrp) then return end
+
+        -- Harte Guards (ohne Werte “festzunageln”)
+        if hum.PlatformStand then
+            print("[AntiTaser] Clearing PlatformStand")
+            hum.PlatformStand = false
+        end
+        if hum.Sit and not InVehicle(hum) then
+            print("[AntiTaser] Clearing Sit (not in vehicle)")
+            hum.Sit = false
+        end
+
+        -- Fallback: wenn WS künstlich auf 0 gehalten wird, kurze Recovery
+        if time() - lastRecover > TASER_MAX_RECOVER then
+            if hum.WalkSpeed < 1 and not InVehicle(hum) then
+                print("[AntiTaser] WalkSpeed low, nudging up briefly")
+                local old = hum.WalkSpeed
+                hum.WalkSpeed = DEFAULT_WALKSPEED
+                lastRecover = time()
+                task.delay(0.15, function()
+                    -- Server setzt üblicherweise wieder seinen Wert,
+                    -- wir zwingen nichts dauerhaft.
+                    hum.WalkSpeed = old
+                end)
             end
         end
     end
 
-    ----------------------------------------------------------------
+    ------------------------------------------
     -- Heartbeat Loop
-    ----------------------------------------------------------------
+    ------------------------------------------
     RunService.Heartbeat:Connect(function(dt)
-        fallTick(dt)
-        arrestTick(dt)
-        taserTick(dt)
+        AntiFallTick(dt)
+        AntiArrestTick(dt)
+        AntiTaserTick(dt)
     end)
 end
