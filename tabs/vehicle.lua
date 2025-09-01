@@ -1,5 +1,10 @@
 -- tabs/vehicle.lua
 return function(tab, Orion)
+    print(
+    "VehicleMod loaded. | Not safe to use, dev version 1.0\n" ..
+    "Warn Distance: 300 Studs."
+)
+
     ----------------------------------------------------------------
     -- SorinHub | Vehicle Mod (DEV)
     -- - To Vehicle (Teleport auf Sitz & einsteigen)
