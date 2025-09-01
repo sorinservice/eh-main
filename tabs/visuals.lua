@@ -1,9 +1,5 @@
--- tabs/visuals.lua
--- Visuals / ESP for SorinHub (Orion UI)
--- Reihenfolge (von oben nach unten): Team, DisplayName, @Username, Equipped, Distance
--- EIN Toggle für Team: zeigt Team-Namen und färbt Team-Zeile + Skeleton in Teamfarbe.
-
 return function(tab, OrionLib)
+    print("[SorinHub] Visuals stable success")
 
     ----------------------------------------------------------------
     -- SIMPLE SWITCH (einfach hier umstellen)
@@ -120,6 +116,7 @@ return function(tab, OrionLib)
         t.Center = true
         t.Outline = STATE.textOutline
         t.Transparency = 1
+        t.Font = 2
         return t
     end
     local function NewLine()
@@ -256,7 +253,7 @@ return function(tab, OrionLib)
                     local dist = (myHRP.Position - hrp.Position).Magnitude
                     local obj  = alloc(plr)
                     if dist <= STATE.maxDistance then
-                        local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
+                        local pos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 6, 0))
                         if onScreen then
                             local x, y = pos.X, pos.Y
                             local yOff = 0
