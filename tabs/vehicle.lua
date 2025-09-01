@@ -227,86 +227,136 @@ return function(tab, OrionLib)
         end
     end
 
-    ----------------------------------------------------------------
-    -- Car Fly
-    ----------------------------------------------------------------
-    local flyEnabled  = false
-    local flySpeed    = 60      -- adjustable 10..190
-    local safeFly     = false
-    local flyConn     = nil
-    local safeTick    = 0
+----------------------------------------------------------------
+-- Car Fly (anchored, collisionless while flying)
+----------------------------------------------------------------
+local flyEnabled  = false
+local flySpeed    = 60      -- adjustable 10..190
+local safeFly     = false
+local flyConn     = nil
+local safeTick    = 0
 
-    local function getVehicleRoot()
-        local vf = myVehicleFolder()
-        if not vf then return nil end
-        ensurePrimaryPart(vf)
-        return vf
+-- we remember original physics flags to restore after flight
+local savedFlags = {}  -- [BasePart] = {Anchored=bool, CanCollide=bool}
+
+local function forEachPart(vf, fn)
+    if not vf then return end
+    for _,p in ipairs(vf:GetDescendants()) do
+        if p:IsA("BasePart") then fn(p) end
     end
+end
 
-    local function toggleFly(state)
-        if state == nil then state = not flyEnabled end
-        flyEnabled = state
-        if flyConn then flyConn:Disconnect(); flyConn = nil end
-        if not flyEnabled then
-            OrionLib:MakeNotification({Name="Car Fly", Content="Deaktiviert.", Time=2})
-            return
-        end
-        OrionLib:MakeNotification({Name="Car Fly", Content="Aktiviert (X zum togglen).", Time=2})
+local function getVehicleRoot()
+    local vf = myVehicleFolder()
+    if not vf then return nil end
+    ensurePrimaryPart(vf)
+    return vf
+end
 
-        local lastCF = nil
-        safeTick = 0
-
-        flyConn = RunService.RenderStepped:Connect(function(dt)
-            local vf = getVehicleRoot(); if not vf then return end
-            local rootCF = vf:GetPivot()
-            lastCF = rootCF
-
-            -- movement vector from inputs (WASD, QE)
-            local dir = Vector3.zero
-            if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.E) then dir += Vector3.new(0,1,0) end
-            if UserInput:IsKeyDown(Enum.KeyCode.Q) then dir -= Vector3.new(0,1,0) end
-
-            if dir.Magnitude > 0 then
-                dir = dir.Unit
-                local step = dir * (flySpeed * dt)
-                local newPos = rootCF.Position + step
-                local lookAt = newPos + (Camera.CFrame.LookVector)
-                local newCF  = CFrame.lookAt(newPos, lookAt)
-                pcall(function() vf:PivotTo(newCF) end)
-                lastCF = newCF
-            end
-
-            -- Safe Fly: touch ground briefly every 6s then go back
-            if safeFly then
-                safeTick += dt
-                if safeTick >= 6 then
-                    safeTick = 0
-                    local down = RaycastParams.new()
-                    down.FilterType = Enum.RaycastFilterType.Blacklist
-                    down.FilterDescendantsInstances = {vf}
-                    local ray = Workspace:Raycast(vf:GetPivot().Position, Vector3.new(0,-1000,0), down)
-                    if ray then
-                        local groundCF = CFrame.new(ray.Position + Vector3.new(0, 2, 0), ray.Position + Vector3.new(0,2,0) + Camera.CFrame.LookVector)
-                        pcall(function() vf:PivotTo(groundCF) end)
-                        task.wait(0.5)
-                        if lastCF then pcall(function() vf:PivotTo(lastCF) end) end
-                    end
-                end
-            end
+local function setFlightPhysics(vf, on)
+    if not vf then return end
+    if on then
+        savedFlags = {}
+        forEachPart(vf, function(bp)
+            savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
+            bp.Anchored   = true       -- freeze physics so PivotTo is absolute
+            bp.CanCollide = false      -- prevent “sticking” to ground
         end)
+    else
+        for bp,flags in pairs(savedFlags) do
+            if bp and bp.Parent then
+                bp.Anchored   = flags.Anchored
+                bp.CanCollide = flags.CanCollide
+            end
+        end
+        savedFlags = {}
+    end
+end
+
+local function toggleFly(state)
+    if state == nil then state = not flyEnabled end
+    if state == flyEnabled then return end
+    flyEnabled = state
+
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+
+    local vf = getVehicleRoot()
+    if not vf then
+        flyEnabled = false
+        OrionLib:MakeNotification({Name="Car Fly", Content="Kein Fahrzeug gefunden.", Time=2})
+        return
     end
 
-    -- Keybind X for fly toggle
-    UserInput.InputBegan:Connect(function(inp, gpe)
-        if gpe then return end
-        if inp.KeyCode == Enum.KeyCode.X then
-            toggleFly()
+    if not flyEnabled then
+        setFlightPhysics(vf, false)
+        OrionLib:MakeNotification({Name="Car Fly", Content="Deaktiviert.", Time=2})
+        return
+    end
+
+    setFlightPhysics(vf, true)  -- anchor & nocollide during flight
+    OrionLib:MakeNotification({Name="Car Fly", Content="Aktiviert (X zum togglen).", Time=2})
+
+    local lastCF = vf:GetPivot()
+    safeTick = 0
+
+    flyConn = RunService.RenderStepped:Connect(function(dt)
+        if not flyEnabled then return end
+        local vf2 = getVehicleRoot()
+        if not vf2 then return end
+
+        local rootCF = vf2:GetPivot()
+        lastCF = rootCF
+
+        -- build direction (WASD + E up / Q down; also Space up / LeftControl down)
+        local dir = Vector3.zero
+        if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+        if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+
+        if dir.Magnitude > 0 then
+            dir = dir.Unit
+            local step = dir * (flySpeed * dt)
+            local newPos = rootCF.Position + step
+            local lookAt = newPos + (Camera.CFrame.LookVector)
+            local newCF  = CFrame.lookAt(newPos, lookAt)
+            pcall(function() vf2:PivotTo(newCF) end)
+            lastCF = newCF
+        end
+
+        -- Safe Fly: tap ground every ~6s then return up
+        if safeFly then
+            safeTick += dt
+            if safeTick >= 6 then
+                safeTick = 0
+                -- briefly allow collisions just to “touch”
+                setFlightPhysics(vf2, false)
+                local rayParams = RaycastParams.new()
+                rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+                rayParams.FilterDescendantsInstances = {vf2}
+                local from = vf2:GetPivot().Position
+                local hit = Workspace:Raycast(from, Vector3.new(0,-1000,0), rayParams)
+                if hit then
+                    local groundCF = CFrame.new(hit.Position + Vector3.new(0, 2, 0), hit.Position + Vector3.new(0,2,0) + Camera.CFrame.LookVector)
+                    pcall(function() vf2:PivotTo(groundCF) end)
+                end
+                task.wait(0.5)
+                setFlightPhysics(vf2, true)
+                if lastCF then pcall(function() vf2:PivotTo(lastCF) end) end
+            end
         end
     end)
+end
+
+-- Keybind X for fly toggle
+UserInput.InputBegan:Connect(function(inp, gpe)
+    if gpe then return end
+    if inp.KeyCode == Enum.KeyCode.X then
+        toggleFly()
+    end
+end)
 
     -- Mobile Fly Panel (simple / draggable)
     local function spawnMobileFly()
