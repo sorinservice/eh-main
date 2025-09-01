@@ -95,100 +95,49 @@ return function(tab, OrionLib)
     tab:AddParagraph("Note", "Respawns and deletes all Tools from your Backpack/Character.")
 
     --// =================== Anti-Fall: pads & velocity =========================
-    local antiFallEnabled = false
-    local antiFallMode = CFG.AntiFall.Mode -- track current mode
-    local fallConn
+    -- Anti-Fall Damage (Velocity only)
+local antiFallEnabled = false
+local fallConn
 
-    local lastPadY     = nil
-    local fallStartY   = nil
+local function stepAntiFall(dt)
+    local char = LP.Character
+    local hum  = getHumanoid(char)
+    local hrp  = getHRP(char)
+    if not (char and hum and hrp) then return end
 
-    local function resetFallTrack()
-        lastPadY   = nil
-        fallStartY = nil
+    local vy = hrp.AssemblyLinearVelocity.Y
+    local falling = vy < -CFG.AntiFall.MinFallSpeed and hum.FloorMaterial == Enum.Material.Air
+    if not falling then return end
+
+    -- Velocity clamp
+    local cap     = -math.abs(CFG.AntiFall.CapDownSpeed)
+    local newVy   = math.max(vy, cap)
+    local v       = hrp.AssemblyLinearVelocity
+    if newVy ~= vy then
+        local blendedY = vy + (newVy - vy) * CFG.AntiFall.BlendFactor
+        hrp.AssemblyLinearVelocity = Vector3.new(v.X, blendedY, v.Z)
     end
+end
 
-    local function spawnPadBelow(hrp)
-        local pos = hrp.Position
-        local pad = Instance.new("Part")
-        pad.Name = "Sorin_FallPad"
-        pad.Size = Vector3.new(CFG.AntiFall.PadSizeXZ, CFG.AntiFall.PadThickness, CFG.AntiFall.PadSizeXZ)
-        pad.Anchored = true
-        pad.CanCollide = true
-        pad.CanQuery = false
-        pad.Transparency = 1 -- fully invisible (server may still see collisions)
-        pad.CFrame = CFrame.new(pos.X, pos.Y - CFG.AntiFall.PadYOffset, pos.Z)
-        pad.Parent = Workspace
-        Debris:AddItem(pad, CFG.AntiFall.PadLife)
+local function startAntiFall()
+    if fallConn then fallConn:Disconnect() end
+    fallConn = RunService.Heartbeat:Connect(stepAntiFall)
+end
+
+local function stopAntiFall()
+    if fallConn then fallConn:Disconnect(); fallConn = nil end
+end
+
+local secFall = tab:AddSection({ Name = "Anti-Fall Damage" })
+secFall:AddToggle({
+    Name = "Enable Anti-Fall (Velocity Clamp)",
+    Default = false,
+    Callback = function(v)
+        antiFallEnabled = v
+        if v then startAntiFall() else stopAntiFall() end
     end
+})
 
-    local function stepAntiFall(dt)
-        local char = LP.Character
-        local hum  = getHumanoid(char)
-        local hrp  = getHRP(char)
-        if not (char and hum and hrp) then resetFallTrack(); return end
-
-        -- we only protect while actually falling
-        local vy = hrp.AssemblyLinearVelocity.Y
-        local falling = vy < -CFG.AntiFall.MinFallSpeed and hum.FloorMaterial == Enum.Material.Air
-        if not falling then resetFallTrack(); return end
-
-        -- track total drop to avoid engaging on tiny hops
-        local yNow = hrp.Position.Y
-        fallStartY = fallStartY or yNow
-        local drop = fallStartY - yNow
-
-        if drop < CFG.AntiFall.MinHeightDrop then
-            -- not yet significant
-            lastPadY = nil
-            return
-        end
-
-        if antiFallMode == "Pads" then
-            -- spawn pads every N studs drop
-            if not lastPadY or (lastPadY - yNow) >= CFG.AntiFall.PadSpacingY then
-                spawnPadBelow(hrp)
-                lastPadY = yNow
-            end
-        else
-            -- Velocity mode: gently clamp downward velocity
-            local cap     = -math.abs(CFG.AntiFall.CapDownSpeed)
-            local newVy   = math.max(vy, cap)
-            local v       = hrp.AssemblyLinearVelocity
-            if newVy ~= vy then
-                local blendedY = vy + (newVy - vy) * CFG.AntiFall.BlendFactor
-                hrp.AssemblyLinearVelocity = Vector3.new(v.X, blendedY, v.Z)
-            end
-        end
-    end
-
-    local function startAntiFall()
-        if fallConn then fallConn:Disconnect() end
-        resetFallTrack()
-        fallConn = RunService.Heartbeat:Connect(stepAntiFall)
-    end
-
-    local function stopAntiFall()
-        if fallConn then fallConn:Disconnect(); fallConn = nil end
-        resetFallTrack()
-    end
-
-    local secFall = tab:AddSection({ Name = "Anti-Fall" })
-    secFall:AddDropdown({
-        Name = "Mode",
-        Options = {"Pads","Velocity"},
-        Default = antiFallMode,
-        Callback = function(mode)
-            antiFallMode = mode
-        end
-    })
-    secFall:AddToggle({
-        Name = "Enable Anti-Fall",
-        Default = false,
-        Callback = function(v)
-            antiFallEnabled = v
-            if v then startAntiFall() else stopAntiFall() end
-        end
-    })
 
     --// =================== Anti-Arrest (soft TP) ==============================
     local antiArrestEnabled = false
