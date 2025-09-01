@@ -1,7 +1,7 @@
 -- tabs/vehicle.lua
 return function(tab, Orion)
     print(
-    "VehicleMod loaded. | Not safe to use, dev version 1.0\n" ..
+    "VehicleMod loaded. | Not safe to use, dev version 1.1\n" ..
     "Warn Distance: 300 Studs."
 )
 
