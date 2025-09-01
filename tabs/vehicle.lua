@@ -1,5 +1,6 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
+    print("Deine Mudda is fett")
     ----------------------------------------------------------------
     -- Vehicle Mod (dev-safe)
     -- - To Vehicle (teleport neben Sitz, Prompt drücken, sitzen)
