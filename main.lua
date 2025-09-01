@@ -10,6 +10,7 @@ local Window = OrionLib:MakeWindow({
 -- Tabs-Mapping (DEV-Branch)
 local TABS = {
     Info     = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/info.lua",
+    Aimbot   = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/aimbot.lua",
     ESPs     = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/visuals.lua",
     Bypass   = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/bypass.lua",
     Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/main/tabs/graphics.lua",
@@ -48,6 +49,7 @@ end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",      TABS.Info,     "info")
+attachTab("Aimbot",    TABS.Aimbot,   "main")
 attachTab("ESPs",      TABS.ESPs,     "main")
 attachTab("Graphics",  TABS.Graphics, "main")
 attachTab("Bypass",    TABS.Bypass,   "main")
