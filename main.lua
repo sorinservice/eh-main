@@ -180,7 +180,8 @@ local TABS = {
     Graphics = "https://raw.githubusercontent.com/sorinservice/eh-main/heads/dev/tabs/graphics.lua",
     Bypass  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
     Misc = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
-    Player = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua"
+    Player = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua",
+    Aimbot = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua"
 }
 
 -- Loader-Helfer
@@ -215,6 +216,7 @@ end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,      "info")
+attachTab("Aimbot", TABS.Aimbot,     "main")
 attachTab("ESPs", TABS.ESPs,         "main")
 attachTab("Graphics", TABS.Graphics, "main")
 attachTab("Player", TABS.Player,     "main")
