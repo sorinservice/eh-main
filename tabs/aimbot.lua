@@ -1,155 +1,197 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
-    print("[SorinHub] Aimbot module (v1) init")
-    -- Services
-    local Players     = game:GetService("Players")
-    local RunService  = game:GetService("RunService")
-    local UserInput   = game:GetService("UserInputService")
-    local Workspace   = game:GetService("Workspace")
-    local CoreGui     = game:GetService("CoreGui")
-    local HttpService = game:GetService("HttpService")
-
-    local LocalPlayer = Players.LocalPlayer
-    local Camera      = Workspace.CurrentCamera
-
-    -- Executor helpers
-    local function ui_parent()
-        local p; pcall(function() if gethui then p = gethui() end end)
-        return p or CoreGui
-    end
-    local function protect_gui(gui)
-        pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
-    end
-    local HAS_DRAWING = (typeof(Drawing)=="table" or typeof(Drawing)=="userdata") and typeof(Drawing.new)=="function"
-
     ----------------------------------------------------------------
+    -- SorinHub Aimbot (Executor-freundlich)
+    -- - FOV-Kreis als GUI (kein Drawing-Zwang)
+    -- - BindToRenderStep nach der Kamera (funktioniert auch bei Track/Follow)
+    -- - Hold-Aim (RMB) mit Aggressions-Regler (0.1..1.0  =>  höher = aggressiver)
+    -- - Team-Filter (Police <-> Citizen), optional
+    -- - Mobile-Panel (verschiebbar) mit Aimbot/Prediction Toggle
+    -- - Persistenz über writefile/readfile  (SorinConfig/aimbot.json)
+    ----------------------------------------------------------------
+
+    -----------------------------
+    -- Services & singletons
+    -----------------------------
+    local Players           = game:GetService("Players")
+    local RunService        = game:GetService("RunService")
+    local UserInputService  = game:GetService("UserInputService")
+    local HttpService       = game:GetService("HttpService")
+    local Camera            = workspace.CurrentCamera
+    local LocalPlayer       = Players.LocalPlayer
+
+    -----------------------------
     -- Persistenz
-    ----------------------------------------------------------------
-    local CFG_DIR  = "SorinConfig"
-    local CFG_PATH = CFG_DIR.."/aimbot.json"
+    -----------------------------
+    local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
+    local SAVE_FILE   = SAVE_FOLDER .. "/aimbot.json"
 
-    local DEFAULTS = {
-        Enabled        = false,                              -- alles aus
-        AimbotKey      = "Q",                                -- Toggle-Key
-        KeyActivation  = "MouseButton2",                     -- RMB halten
-        FOVVisible     = false,
-        FOV            = 100,                                -- 50..300
-        FOVColor       = {R=0,G=185,B=35},
+    local function safe_read_json(path)
+        local ok, data = pcall(function()
+            if isfile and isfile(path) then
+                return HttpService:JSONDecode(readfile(path))
+            end
+            return nil
+        end)
+        return ok and data or nil
+    end
 
-        TeamCheck      = false,                              -- Police <-> Citizen
-        DistanceCheck  = false,
-        MaxDistance    = 500,                                -- 50..1000
+    local function safe_write_json(path, tbl)
+        pcall(function()
+            if makefolder and not isfolder(SAVE_FOLDER) then
+                makefolder(SAVE_FOLDER)
+            end
+            if writefile then
+                writefile(path, HttpService:JSONEncode(tbl))
+            end
+        end)
+    end
 
-        Smoothness     = 0.5,                                -- 0.1 smooth -> 1.0 aggressiv
-        Prediction     = { Enabled=false, Value=0.185 },
-        AimPart        = "HumanoidRootPart",
-
-        MobilePanel    = true
+    -----------------------------
+    -- Konfiguration (Defaults AUS)
+    -----------------------------
+    local CFG = {
+        Enabled         = false,                        -- Haupt-Toggle
+        KeyActivation   = "MouseButton2",               -- RMB halten
+        FOVVisible      = false,                        -- FOV standardmäßig AUS
+        FOVRadius       = 100,                          -- 50..300
+        FOVColor        = { r = 0, g = 185, b = 35 },   -- RGB ints
+        MaxDistance     = 250,                          -- 50..1000
+        Aggression      = 0.25,                         -- 0.1..1.0  (höher = aggressiver)
+        Prediction      = { Enabled = false, Value = 0.18 }, -- linear prediction
+        TeamFilter      = { Enabled = false },          -- Police <-> Citizen
+        MobilePanel     = { Enabled = false, Prediction = false }
     }
 
-    local function C3_from_tbl(t) return Color3.fromRGB(t.R or 255, t.G or 0, t.B or 0) end
-    local function C3_to_tbl(c)   return {R=math.floor(c.R*255), G=math.floor(c.G*255), B=math.floor(c.B*255)} end
-    local function ensure_folder()
-        if makefolder and isfolder and not isfolder(CFG_DIR) then pcall(makefolder, CFG_DIR) end
+    -- Lade ggf. gespeicherte Werte
+    do
+        local saved = safe_read_json(SAVE_FILE)
+        if type(saved) == "table" then
+            for k,v in pairs(saved) do
+                if type(CFG[k]) == "table" and type(v) == "table" then
+                    for kk,vv in pairs(v) do CFG[k][kk] = vv end
+                else
+                    CFG[k] = v
+                end
+            end
+        end
     end
-    local function load_cfg()
-        if not (readfile and isfile and isfile(CFG_PATH)) then return table.clone(DEFAULTS) end
-        local ok, data = pcall(readfile, CFG_PATH); if not ok or not data then return table.clone(DEFAULTS) end
-        local ok2, dec = pcall(HttpService.JSONDecode, HttpService, data); if not ok2 or type(dec)~="table" then return table.clone(DEFAULTS) end
-        for k,v in pairs(DEFAULTS) do if dec[k]==nil then dec[k]=v end end
-        return dec
-    end
+
     local function save_cfg()
-        if not (writefile and HttpService) then return end
-        ensure_folder()
-        local ok, enc = pcall(HttpService.JSONEncode, HttpService, CFG)
-        if ok then pcall(writefile, CFG_PATH, enc) end
+        -- serialize Color3 table sauber
+        safe_write_json(SAVE_FILE, CFG)
     end
 
-    local CFG = load_cfg()
-
-    ----------------------------------------------------------------
-    -- JALON-Logik (center-FOV, LOS, Distance, RMB-Hold)
-    ----------------------------------------------------------------
-    local function screen_center()
-        Camera = Workspace.CurrentCamera
-        local vs = Camera and Camera.ViewportSize or Vector2.new(800,600)
-        return Vector2.new(vs.X/2, vs.Y/2)
+    local function color3_from_tbl(t)
+        return Color3.fromRGB(t.r or 0, t.g or 255, t.b or 0)
     end
 
-    local function team_name(plr)
+    local function tbl_from_color3(c)
+        return { r = math.floor(c.R * 255), g = math.floor(c.G * 255), b = math.floor(c.B * 255) }
+    end
+
+    -----------------------------
+    -- FOV GUI (zentriert)
+    -----------------------------
+    local FOVGui, FOVCircle
+    local function ensure_fov_gui()
+        if FOVGui then return end
+        FOVGui = Instance.new("ScreenGui")
+        FOVGui.Name = "Sorin_FOV"
+        FOVGui.IgnoreGuiInset = true
+        FOVGui.ResetOnSpawn = false
+        FOVGui.Parent = game:GetService("CoreGui")
+
+        local frame = Instance.new("Frame")
+        frame.Name = "Circle"
+        frame.BackgroundTransparency = 1
+        frame.BorderSizePixel = 0
+        frame.AnchorPoint = Vector2.new(0.5, 0.5)
+        frame.Parent = FOVGui
+
+        local uic = Instance.new("UICorner")
+        uic.CornerRadius = UDim.new(1, 0)
+        uic.Parent = frame
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = 2
+        stroke.Transparency = 0.2
+        stroke.Parent = frame
+
+        FOVCircle = frame
+    end
+
+    local function update_fov_gui()
+        if not (CFG.Enabled and CFG.FOVVisible) then
+            if FOVGui then FOVGui.Enabled = false end
+            return
+        end
+        ensure_fov_gui()
+        FOVGui.Enabled = true
+
+        local vp = Camera.ViewportSize
+        FOVCircle.Position = UDim2.fromOffset(vp.X * 0.5, vp.Y * 0.5)
+        FOVCircle.Size     = UDim2.fromOffset(CFG.FOVRadius * 2, CFG.FOVRadius * 2)
+        local stroke = FOVCircle:FindFirstChildOfClass("UIStroke")
+        if stroke then stroke.Color = color3_from_tbl(CFG.FOVColor) end
+    end
+
+    -----------------------------
+    -- Zielauswahl & Utilities
+    -----------------------------
+    local function my_team_name(plr)
         local t = plr.Team
-        return (t and t.Name) or ""
-    end
-    local function opponents(a, b)
-        local A, B = team_name(a), team_name(b)
-        if (A=="" or B=="") then return true end
-        return (A=="Police" and B=="Citizen") or (A=="Citizen" and B=="Police")
+        return t and t.Name or nil
     end
 
-    local function root_of(plr)
-        local c = plr.Character
-        return c and c:FindFirstChild("HumanoidRootPart") or nil
+    local function team_allows_target(myName, otherName)
+        -- Optionaler Filter: Nur Police<->Citizen
+        if not CFG.TeamFilter.Enabled then return true end
+        if not myName or not otherName then return false end
+        if myName == otherName then return false end
+        local pair = {
+            Police   = "Citizen",
+            Citizen  = "Police"
+        }
+        return pair[myName] == otherName
     end
 
-    local function is_valid_enemy(plr)
-        if plr == LocalPlayer then return false end
-        local ch  = plr.Character
-        if not ch then return false end
-        if ch:FindFirstChildWhichIsA("ForceField") then return false end
-        local hum = ch:FindFirstChildWhichIsA("Humanoid")
-        if not hum or hum.Health <= 0 then return false end
-        if CFG.TeamCheck and not opponents(LocalPlayer, plr) then return false end
-        return true
-    end
-
-    local function has_clear_los(target_pos)
-        -- bevorzugt GetPartsObscuringTarget; fallback Raycast
-        local ignore = { Camera, LocalPlayer.Character }
-        local ok, blocked = pcall(function()
-            return Camera:GetPartsObscuringTarget({ target_pos }, ignore)
-        end)
-        if ok then return #blocked == 0 end
-
-        local head   = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Head")
-        local origin = (head and head.Position) or Camera.CFrame.Position
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = ignore
-        params.IgnoreWater = true
-        local res = workspace:Raycast(origin, target_pos - origin, params)
-        return (not res)
-    end
-
-    local function vel_pred(v) return Vector3.new(v.X, math.clamp(v.Y*0.5, -5, 10), v.Z) end
-    local function predict_cframe(part)
-        if not CFG.Prediction.Enabled then return part.CFrame end
-        return part.CFrame + vel_pred(part.Velocity) * (CFG.Prediction.Value or 0.185)
+    local function predict_position(part)
+        if not (CFG.Prediction.Enabled and part) then
+            return part and part.Position or nil
+        end
+        local speed = math.max(0.05, CFG.Prediction.Value) -- Sekunden Vorhaltezeit-Äquivalent
+        return part.Position + (part.Velocity * speed)
     end
 
     local function nearest_target_center()
-        Camera = Workspace.CurrentCamera
-        local myRoot = root_of(LocalPlayer)
-        if not (Camera and myRoot) then return nil end
+        local me = LocalPlayer.Character
+        if not me then return nil end
+        local myRoot = me:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return nil end
 
-        local center = screen_center()
-        local bestPart, bestDist = nil, math.huge
-        local FOVR = math.clamp(CFG.FOV or 100, 50, 300)
+        local vpCenter = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y * 0.5)
+        local best, bestDist = nil, math.huge
 
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if is_valid_enemy(plr) then
+        local myTeam = my_team_name(LocalPlayer)
+
+        for _,plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
                 local ch = plr.Character
-                local part = ch and (ch:FindFirstChild(CFG.AimPart) or ch:FindFirstChild("HumanoidRootPart"))
-                if part then
-                    local sp, on = Camera:WorldToViewportPoint(part.Position)
-                    if on then
-                        -- Distance gate
-                        if not CFG.DistanceCheck or ((myRoot.Position - part.Position).Magnitude <= math.clamp(CFG.MaxDistance or 500, 50, 1000)) then
-                            if has_clear_los(part.Position) then
-                                local d = (center - Vector2.new(sp.X, sp.Y)).Magnitude
-                                if d <= FOVR and d < bestDist then
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+                if hum and hum.Health > 0 and hrp then
+                    -- Distanz
+                    local studs = (hrp.Position - myRoot.Position).Magnitude
+                    if studs <= CFG.MaxDistance then
+                        -- Team-Regel, wenn eingeschaltet (Police<->Citizen)
+                        if team_allows_target(myTeam, my_team_name(plr)) then
+                            local sp, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+                            if onScreen then
+                                local d = (vpCenter - Vector2.new(sp.X, sp.Y)).Magnitude
+                                if d <= CFG.FOVRadius and d < bestDist then
                                     bestDist = d
-                                    bestPart = part
+                                    best = hrp
                                 end
                             end
                         end
@@ -157,324 +199,314 @@ return function(tab, OrionLib)
                 end
             end
         end
-        return bestPart
+        return best
     end
 
-    ----------------------------------------------------------------
-    -- FOV/TargetBox (Drawing bevorzugt, GUI Fallback)
-    ----------------------------------------------------------------
-    local FOVCircle, TargetBox, FOVGui
+    -----------------------------
+    -- Aim-Loop (nach Kamera)
+    -----------------------------
+    local STEP_NAME = "SorinAimStep"
+    local TargetBoxGui
+    local function ensure_target_box()
+        if TargetBoxGui then return end
+        local g = Instance.new("ScreenGui")
+        g.Name = "Sorin_TargetBox"
+        g.ResetOnSpawn = false
+        g.IgnoreGuiInset = true
+        g.Parent = game:GetService("CoreGui")
 
-    local function ensure_fov()
-        if HAS_DRAWING then
-            if not FOVCircle then
-                FOVCircle = Drawing.new("Circle")
-                FOVCircle.Thickness = 2
-                FOVCircle.Filled = false
-                FOVCircle.Transparency = 0.7
-            end
-            if not TargetBox then
-                TargetBox = Drawing.new("Square")
-                TargetBox.Color = Color3.fromRGB(0,185,35)
-                TargetBox.Filled = true
-                TargetBox.Size = Vector2.new(20,20)
-                TargetBox.Thickness = 20
-                TargetBox.Transparency = 0.6
-                TargetBox.Visible = false
-            end
-        else
-            if not FOVGui then
-                FOVGui = Instance.new("ScreenGui")
-                FOVGui.Name = "Sorin_FOV"
-                FOVGui.IgnoreGuiInset = true
-                FOVGui.ResetOnSpawn = false
-                protect_gui(FOVGui); FOVGui.Parent = ui_parent()
+        local b = Instance.new("Frame")
+        b.Name = "Box"
+        b.AnchorPoint = Vector2.new(0.5, 0.5)
+        b.Size = UDim2.fromOffset(20, 20)
+        b.BackgroundColor3 = color3_from_tbl({r=0,g=185,b=35})
+        b.BackgroundTransparency = 0.4
+        b.Parent = g
 
-                local circle = Instance.new("Frame")
-                circle.Name = "FOV"
-                circle.BackgroundTransparency = 1
-                circle.Parent = FOVGui
-                local uic = Instance.new("UICorner"); uic.CornerRadius = UDim.new(1,0); uic.Parent = circle
-                local stroke = Instance.new("UIStroke"); stroke.Thickness=2; stroke.Parent=circle
-                FOVCircle = circle
+        local uic = Instance.new("UICorner")
+        uic.CornerRadius = UDim.new(0,4)
+        uic.Parent = b
 
-                local box = Instance.new("Frame")
-                box.Name = "TargetBox"
-                box.BackgroundColor3 = Color3.fromRGB(0,185,35)
-                box.BackgroundTransparency = 0.4
-                box.Size = UDim2.fromOffset(20,20)
-                box.Visible = false
-                box.Parent = FOVGui
-                TargetBox = box
+        TargetBoxGui = g
+    end
+
+    local function set_targetbox(sp, visible)
+        ensure_target_box()
+        TargetBoxGui.Enabled = visible or false
+        if visible then
+            local box = TargetBoxGui:FindFirstChild("Box")
+            if box then
+                box.Position = UDim2.fromOffset(sp.X, sp.Y)
             end
         end
     end
 
-    local function set_fov_visible(vis)
-        if HAS_DRAWING then
-            if FOVCircle then FOVCircle.Visible = vis end
-        else
-            if FOVGui then FOVGui.Enabled = vis end
-            if FOVCircle then FOVCircle.Visible = vis end
-        end
+    local function start_aim_loop()
+        pcall(function() RunService:UnbindFromRenderStep(STEP_NAME) end)
+        local priority = Enum.RenderPriority.Camera.Value + 1
+
+        RunService:BindToRenderStep(STEP_NAME, priority, function()
+            update_fov_gui()
+            if not CFG.Enabled then
+                set_targetbox(Vector2.new(), false)
+                return
+            end
+
+            -- Kamera ggf. in Custom versuchen (nicht kritisch)
+            pcall(function()
+                if Camera.CameraType ~= Enum.CameraType.Custom then
+                    Camera.CameraType = Enum.CameraType.Custom
+                end
+            end)
+
+            local tgt = nearest_target_center()
+            if not tgt then
+                set_targetbox(Vector2.new(), false)
+                return
+            end
+
+            local sp, onScreen = Camera:WorldToViewportPoint(tgt.Position)
+            set_targetbox(Vector2.new(sp.X, sp.Y), onScreen)
+
+            -- Aktivieren per RMB halten
+            local activationType = Enum.UserInputType[CFG.KeyActivation or "MouseButton2"]
+            if activationType and UserInputService:IsMouseButtonPressed(activationType) then
+                local lookTo = predict_position(tgt) or tgt.Position
+                local goal   = CFrame.lookAt(Camera.CFrame.Position, lookTo)
+
+                -- Aggression direkt als Lerp-Faktor (0.1..1.0) => höher = aggressiver
+                local factor = math.clamp(CFG.Aggression or 0.25, 0.1, 1.0)
+
+                Camera.CFrame = Camera.CFrame:Lerp(goal, factor)
+                -- „Nachdruck“ falls Game zurückzieht (optional)
+                -- Camera.CFrame = Camera.CFrame:Lerp(goal, factor)
+            end
+        end)
     end
 
-    local function update_fov()
-        ensure_fov()
-        local c  = screen_center()
-        local R  = math.clamp(CFG.FOV or 100, 50, 300)
-        local col= C3_from_tbl(CFG.FOVColor)
-
-        if HAS_DRAWING then
-            FOVCircle.Position = c
-            FOVCircle.Radius   = R
-            FOVCircle.Color    = col
-        else
-            FOVCircle.Size     = UDim2.fromOffset(R*2, R*2)
-            FOVCircle.Position = UDim2.fromOffset(c.X - R, c.Y - R)
-            local stroke = FOVCircle:FindFirstChildOfClass("UIStroke")
-            if stroke then stroke.Color = col end
-        end
-
-        -- nur sichtbar, wenn Aimbot an UND FOVVisible true
-        set_fov_visible(CFG.Enabled and CFG.FOVVisible)
+    local function stop_aim_loop()
+        pcall(function() RunService:UnbindFromRenderStep(STEP_NAME) end)
+        set_targetbox(Vector2.new(), false)
+        update_fov_gui()
     end
 
-    ----------------------------------------------------------------
-    -- Mobile Panel (draggable)
-    ----------------------------------------------------------------
-    local MobileGui, MobileFrame, BtnAimbot, BtnPred
-    local dragging, dragStart, startPos
-    local function make_mobile_panel()
-        if not CFG.MobilePanel then return end
-        if MobileGui then return end
+    -----------------------------
+    -- Mobile-Panel (verschiebbar)
+    -----------------------------
+    local function spawn_mobile_panel()
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "Sorin_MobileAim"
+        gui.IgnoreGuiInset = true
+        gui.ResetOnSpawn = false
+        gui.Enabled = CFG.MobilePanel.Enabled
+        gui.Parent = game:GetService("CoreGui")
 
-        MobileGui = Instance.new("ScreenGui")
-        MobileGui.Name = "Sorin_MobileAimbot"
-        MobileGui.IgnoreGuiInset = true
-        MobileGui.ResetOnSpawn = false
-        protect_gui(MobileGui); MobileGui.Parent = ui_parent()
+        local frame = Instance.new("Frame")
+        frame.Name = "Panel"
+        frame.Size = UDim2.fromOffset(180, 120)
+        frame.Position = UDim2.fromOffset(30, 300)
+        frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+        frame.Parent = gui
 
-        MobileFrame = Instance.new("Frame")
-        MobileFrame.Name = "Panel"
-        MobileFrame.Size = UDim2.fromOffset(220, 64)
-        MobileFrame.AnchorPoint = Vector2.new(0.5, 1)
-        MobileFrame.Position = UDim2.fromScale(0.5, 0.98)
-        MobileFrame.BackgroundColor3 = Color3.fromRGB(25,25,25)
-        MobileFrame.Parent = MobileGui
-        local uic = Instance.new("UICorner"); uic.CornerRadius = UDim.new(0,10); uic.Parent = MobileFrame
-        local s   = Instance.new("UIStroke");  s.Thickness=1; s.Color = Color3.fromRGB(90,90,90); s.Parent = MobileFrame
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(90,90,90)
+        stroke.Parent = frame
 
-        MobileFrame.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging  = true
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0,12)
+        corner.Parent = frame
+
+        local title = Instance.new("TextLabel")
+        title.Size = UDim2.new(1, -10, 0, 22)
+        title.Position = UDim2.fromOffset(10, 6)
+        title.BackgroundTransparency = 1
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 14
+        title.Text = "Mobile Aimbot"
+        title.TextColor3 = Color3.fromRGB(240,240,240)
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.Parent = frame
+
+        -- Dragging
+        local dragging, dragStart, startPos
+        frame.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
                 dragStart = input.Position
-                startPos  = MobileFrame.Position
+                startPos = frame.Position
                 input.Changed:Connect(function()
-                    if input.UserInputState == Enum.UserInputState.End then dragging=false end
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
                 end)
             end
         end)
-        MobileFrame.InputChanged:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-                if dragging then
-                    local delta = input.Position - dragStart
-                    MobileFrame.Position = UDim2.new(
-                        startPos.X.Scale, startPos.X.Offset + delta.X,
-                        startPos.Y.Scale, startPos.Y.Offset + delta.Y
-                    )
-                end
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local delta = input.Position - dragStart
+                frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
             end
         end)
 
-        local function makeBtn(txt, x)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.fromOffset(100, 40)
-            b.Position = UDim2.fromOffset(x, 12)
-            b.Text = txt
-            b.TextColor3 = Color3.fromRGB(240,240,240)
-            b.BackgroundColor3 = Color3.fromRGB(45,45,45)
-            b.Font = Enum.Font.GothamBold
-            b.TextSize = 14
-            b.Parent = MobileFrame
-            local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,8); c.Parent = b
-            local s2 = Instance.new("UIStroke");  s2.Thickness=1; s2.Color = Color3.fromRGB(80,80,80); s2.Parent = b
-            return b
+        -- Toggle Aimbot
+        local ab = Instance.new("TextButton")
+        ab.Size = UDim2.fromOffset(160, 28)
+        ab.Position = UDim2.fromOffset(10, 40)
+        ab.BackgroundColor3 = Color3.fromRGB(40,40,40)
+        ab.TextColor3 = Color3.fromRGB(230,230,230)
+        ab.TextSize = 14
+        ab.Font = Enum.Font.GothamSemibold
+        ab.Text = "Aimbot: OFF"
+        ab.Parent = frame
+        Instance.new("UICorner", ab).CornerRadius = UDim.new(0,8)
+
+        local pb = Instance.new("TextButton")
+        pb.Size = UDim2.fromOffset(160, 28)
+        pb.Position = UDim2.fromOffset(10, 74)
+        pb.BackgroundColor3 = Color3.fromRGB(40,40,40)
+        pb.TextColor3 = Color3.fromRGB(230,230,230)
+        pb.TextSize = 14
+        pb.Font = Enum.Font.GothamSemibold
+        pb.Text = "Prediction: OFF"
+        pb.Parent = frame
+        Instance.new("UICorner", pb).CornerRadius = UDim.new(0,8)
+
+        local function refresh_labels()
+            ab.Text = "Aimbot: " .. (CFG.Enabled and "ON" or "OFF")
+            pb.Text = "Prediction: " .. ((CFG.Prediction.Enabled or CFG.MobilePanel.Prediction) and "ON" or "OFF")
         end
 
-        BtnAimbot = makeBtn("Aimbot: OFF", 10)
-        BtnPred   = makeBtn("Prediction: OFF", 110)
-
-        local function refresh()
-            BtnAimbot.Text = "Aimbot: " .. (CFG.Enabled and "ON" or "OFF")
-            BtnPred.Text   = "Prediction: " .. (CFG.Prediction.Enabled and "ON" or "OFF")
-        end
-        refresh()
-
-        BtnAimbot.MouseButton1Click:Connect(function()
-            CFG.Enabled = not CFG.Enabled; save_cfg(); update_fov(); refresh()
+        ab.MouseButton1Click:Connect(function()
+            CFG.Enabled = not CFG.Enabled
+            if CFG.Enabled then start_aim_loop() else stop_aim_loop() end
+            save_cfg(); refresh_labels()
         end)
-        BtnPred.MouseButton1Click:Connect(function()
-            CFG.Prediction.Enabled = not CFG.Prediction.Enabled; save_cfg(); refresh()
+
+        pb.MouseButton1Click:Connect(function()
+            CFG.Prediction.Enabled = not (CFG.Prediction.Enabled)
+            CFG.MobilePanel.Prediction = CFG.Prediction.Enabled
+            save_cfg(); refresh_labels()
         end)
+
+        refresh_labels()
+
+        return gui
     end
 
-    ----------------------------------------------------------------
-    -- Orion UI (dein Style)
-    ----------------------------------------------------------------
-    local sec = tab:AddSection({ Name = "Aimbot" })
-    sec:AddToggle({
+    local MobileGui = spawn_mobile_panel()
+
+    -----------------------------
+    -- ORION UI
+    -----------------------------
+    local secMain   = tab:AddSection({ Name = "Aimbot" })
+    local secFov    = tab:AddSection({ Name = "FOV" })
+    local secFilt   = tab:AddSection({ Name = "Filter / Distance" })
+    local secMob    = tab:AddSection({ Name = "Mobile Panel" })
+
+    -- Haupt-Toggle
+    secMain:AddToggle({
         Name = "Enable Aimbot",
         Default = CFG.Enabled,
-        Callback = function(v) CFG.Enabled=v; save_cfg(); update_fov() end
-    })
-    sec:AddBind({
-        Name = "Aimbot Keybind (toggle)",
-        Default = Enum.KeyCode[CFG.AimbotKey] or Enum.KeyCode.Q,
-        Hold = false,
-        Callback = function()
-            CFG.Enabled = not CFG.Enabled
-            save_cfg(); update_fov()
-            OrionLib:MakeNotification({ Name="Aimbot", Content = CFG.Enabled and "Enabled" or "Disabled", Time=2 })
+        Callback = function(v)
+            CFG.Enabled = v
+            if v then start_aim_loop() else stop_aim_loop() end
+            save_cfg()
         end
     })
-    sec:AddToggle({
-        Name = "Show FOV (only when Aimbot ON)",
-        Default = CFG.FOVVisible,
-        Callback = function(v) CFG.FOVVisible=v; save_cfg(); update_fov() end
-    })
-    sec:AddSlider({
-        Name = "FOV Size",
-        Min = 50, Max = 300, Increment = 5,
-        Default = CFG.FOV,
-        Callback = function(v) CFG.FOV=v; save_cfg(); update_fov() end
-    })
-    sec:AddColorpicker({
-        Name = "FOV Color",
-        Default = C3_from_tbl(CFG.FOVColor),
-        Callback = function(c) CFG.FOVColor=C3_to_tbl(c); save_cfg(); update_fov() end
-    })
-    sec:AddDropdown({
-        Name = "Aim Part",
-        Options = {"HumanoidRootPart","Head","UpperTorso","LowerTorso"},
-        Default = CFG.AimPart,
-        Callback = function(v) CFG.AimPart=v; save_cfg() end
+
+    -- Aggression (0.1..1.0) – höher = aggressiver
+    secMain:AddSlider({
+        Name = "Aim Aggression",
+        Min = 0.1, Max = 1.0, Increment = 0.05,
+        Default = CFG.Aggression,
+        Callback = function(v)
+            CFG.Aggression = v
+            save_cfg()
+        end
     })
 
-    local secB = tab:AddSection({ Name = "Behavior" })
-    secB:AddSlider({
-        Name = "Smoothness (0.1 smooth → 1.0 aggressive)",
-        Min = 0.1, Max = 1.0, Increment = 0.05,
-        Default = CFG.Smoothness,
-        Callback = function(v) CFG.Smoothness=v; save_cfg() end
-    })
-    secB:AddToggle({
-        Name = "Prediction",
+    -- Prediction Toggle + Wert
+    secMain:AddToggle({
+        Name = "Hit Prediction",
         Default = CFG.Prediction.Enabled,
-        Callback = function(v) CFG.Prediction.Enabled=v; save_cfg() end
+        Callback = function(v)
+            CFG.Prediction.Enabled = v
+            CFG.MobilePanel.Prediction = v
+            save_cfg()
+        end
     })
-    secB:AddSlider({
+
+    secMain:AddSlider({
         Name = "Prediction Value",
         Min = 0.05, Max = 0.35, Increment = 0.005,
         Default = CFG.Prediction.Value,
-        Callback = function(v) CFG.Prediction.Value=v; save_cfg() end
+        Callback = function(v)
+            CFG.Prediction.Value = v
+            save_cfg()
+        end
     })
 
-    local secC = tab:AddSection({ Name = "Checks" })
-    secC:AddToggle({
-        Name = "Ignore Team (Police ↔ Citizen only)",
-        Default = CFG.TeamCheck,
-        Callback = function(v) CFG.TeamCheck=v; save_cfg() end
+    -- FOV
+    secFov:AddToggle({
+        Name = "Show FOV",
+        Default = CFG.FOVVisible,
+        Callback = function(v)
+            CFG.FOVVisible = v
+            save_cfg()
+            update_fov_gui()
+        end
     })
-    secC:AddToggle({
-        Name = "Use Distance Check",
-        Default = CFG.DistanceCheck,
-        Callback = function(v) CFG.DistanceCheck=v; save_cfg() end
+
+    secFov:AddSlider({
+        Name = "FOV Size",
+        Min = 50, Max = 300, Increment = 5,
+        Default = CFG.FOVRadius,
+        Callback = function(v)
+            CFG.FOVRadius = math.floor(v)
+            save_cfg()
+        end
     })
-    secC:AddSlider({
-        Name = "Max Distance (Studs)",
-        Min = 50, Max = 1000, Increment = 10,
+
+    secFov:AddColorpicker({
+        Name = "FOV Color",
+        Default = color3_from_tbl(CFG.FOVColor),
+        Callback = function(col)
+            CFG.FOVColor = tbl_from_color3(col)
+            save_cfg()
+        end
+    })
+
+    -- Filter
+    secFilt:AddToggle({
+        Name = "Team Filter (Police <-> Citizen)",
+        Default = CFG.TeamFilter.Enabled,
+        Callback = function(v)
+            CFG.TeamFilter.Enabled = v
+            save_cfg()
+        end
+    })
+
+    secFilt:AddSlider({
+        Name = "Max Distance",
+        Min = 50, Max = 1000, Increment = 25,
         Default = CFG.MaxDistance,
         ValueName = "Studs",
-        Callback = function(v) CFG.MaxDistance=v; save_cfg() end
-    })
-
-    local secM = tab:AddSection({ Name = "Mobile Panel" })
-    secM:AddToggle({
-        Name = "Enable Mobile Aimbot Panel (draggable)",
-        Default = CFG.MobilePanel,
         Callback = function(v)
-            CFG.MobilePanel = v; save_cfg()
-            if v then if not MobileGui then make_mobile_panel() end
-            else if MobileGui then MobileGui:Destroy(); MobileGui=nil; MobileFrame=nil end end
+            CFG.MaxDistance = math.floor(v)
+            save_cfg()
         end
     })
 
-    local stat = tab:AddSection({ Name = "Status" })
-    local lbl = stat:AddLabel(CFG.Enabled and "Status: Active" or "Status: Inactive")
-
-    ----------------------------------------------------------------
-    -- Direkter Hotkey (falls außerhalb des Orion-Binds)
-    ----------------------------------------------------------------
-    UserInput.InputBegan:Connect(function(input, gp)
-        if gp then return end
-        local want = Enum.KeyCode[CFG.AimbotKey] or Enum.KeyCode.Q
-        if input.KeyCode == want then
-            CFG.Enabled = not CFG.Enabled
-            save_cfg(); update_fov()
-            OrionLib:MakeNotification({ Name="Aimbot", Content = CFG.Enabled and "Enabled" or "Disabled", Time=2 })
+    -- Mobile Panel
+    secMob:AddToggle({
+        Name = "Enable Mobile Panel",
+        Default = CFG.MobilePanel.Enabled,
+        Callback = function(v)
+            CFG.MobilePanel.Enabled = v
+            if MobileGui then MobileGui.Enabled = v end
+            save_cfg()
         end
-    end)
+    })
 
-    ----------------------------------------------------------------
-    -- Loop (JALON-Style)
-    ----------------------------------------------------------------
-    ensure_fov()
-    make_mobile_panel()
-    update_fov()
-
-    local function activation_pressed()
-        local key = CFG.KeyActivation or "MouseButton2"
-        local enumInp = Enum.UserInputType[key]
-        if enumInp then return UserInput:IsMouseButtonPressed(enumInp) end
-        return false
-    end
-
-    RunService.PreSimulation:Connect(function()
-        lbl:Set(CFG.Enabled and "Status: Active" or "Status: Inactive")
-        update_fov()
-
-        if not (CFG.Enabled) then
-            if HAS_DRAWING then
-                if FOVCircle then FOVCircle.Visible = false end
-            else
-                if FOVGui then FOVGui.Enabled = false end
-            end
-            if TargetBox then TargetBox.Visible = false end
-            return
-        end
-
-        local tgtPart = nearest_target_center()
-        if not tgtPart then
-            if TargetBox then TargetBox.Visible = false end
-            return
-        end
-
-        local sp, on = Camera:WorldToViewportPoint(tgtPart.Position)
-        if HAS_DRAWING then
-            TargetBox.Visible  = on
-            TargetBox.Position = Vector2.new(sp.X, sp.Y) - (TargetBox.Size/2)
-        else
-            TargetBox.Visible  = on
-            TargetBox.Position = UDim2.fromOffset(sp.X - 10, sp.Y - 10)
-        end
-
-        -- aktives Zielen nur mit Halte-Taste (RMB)
-        if activation_pressed() then
-            local lookTo = (predict_cframe(tgtPart)).Position
-            local goal   = CFrame.lookAt(Camera.CFrame.Position, lookTo)
-            local alpha  = math.clamp(CFG.Smoothness or 0.5, 0.1, 1.0)
-            Camera.CFrame = Camera.CFrame:Lerp(goal, alpha)
-        end
-    end)
+    -- initialer Loop-Zustand
+    if CFG.Enabled then start_aim_loop() else stop_aim_loop() end
+    update_fov_gui()
 end
