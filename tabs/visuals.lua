@@ -1,9 +1,5 @@
--- tabs/visuals.lua
--- Visuals / ESP for SorinHub (Orion UI)
--- Reihenfolge (von oben nach unten): Team, DisplayName, @Username, Equipped, Distance
--- EIN Toggle für Team: zeigt Team-Namen und färbt Team-Zeile + Skeleton in Teamfarbe.
-
 return function(tab, OrionLib)
+    print("[SorinHub] Visuals stable success")
 
     ----------------------------------------------------------------
     -- SIMPLE SWITCH (einfach hier umstellen)
