@@ -4,404 +4,377 @@ return function(tab, OrionLib)
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
     local UserInputService = game:GetService("UserInputService")
-    local TweenService = game:GetService("TweenService")
     local LocalPlayer = Players.LocalPlayer
-    local Camera = workspace.CurrentCamera
-    
-    -- Aimbot Einstellungen
+
+    -- Safe executor feature checks
+    local hasDrawing = (typeof(Drawing) == "table" or typeof(Drawing) == "userdata") and typeof(Drawing.new) == "function"
+    local canMouseClick = (typeof(mouse1click) == "function") or (typeof(mouse1press) == "function" and typeof(mouse1release) == "function")
+
+    -- Settings
     local aimbotSettings = {
-        Enabled = false,
-        Keybind = Enum.KeyCode.Q,
-        Prediction = true,
-        AimPart = "Head",
-        IgnoreTeam = true,
-        FOVColor = Color3.fromRGB(255, 0, 0),
-        MaxDistance = 1000,
-        Smoothness = 0.5,
-        FOVVisible = true,
-        FOVRadius = 100,
-        WallCheck = false,
-        VisibleCheck = true,
-        Triggerbot = false,
+        Enabled       = false,
+        Keybind       = Enum.KeyCode.Q,
+        Prediction    = true,
+        AimPart       = "Head",
+        IgnoreTeam    = true,
+        FOVColor      = Color3.fromRGB(255, 0, 0),
+        MaxDistance   = 1000,          -- Studs (world distance)
+        Smoothness    = 0.5,           -- 0.1 = fast snap, 1.0 = very slow
+        FOVVisible    = true,
+        FOVRadius     = 100,           -- Pixels (screen distance)
+        WallCheck     = false,
+        VisibleCheck  = true,          -- Require target point to be on screen
+        Triggerbot    = false,
         TriggerbotKey = Enum.KeyCode.E
     }
-    
-    -- FOV Circle
-    local FOVCircle = Drawing.new("Circle")
-    FOVCircle.Visible = aimbotSettings.FOVVisible
-    FOVCircle.Radius = aimbotSettings.FOVRadius
-    FOVCircle.Color = aimbotSettings.FOVColor
-    FOVCircle.Thickness = 2
-    FOVCircle.Filled = false
-    FOVCircle.Transparency = 1
-    
-    -- Variablen
-    local aimbotConnection
-    local keybindConnection
-    local triggerbotConnection
+
+    -- FOV Circle (Drawing guarded)
+    local FOVCircle = nil
+    if hasDrawing then
+        FOVCircle = Drawing.new("Circle")
+        FOVCircle.Visible = aimbotSettings.FOVVisible
+        FOVCircle.Radius = aimbotSettings.FOVRadius
+        FOVCircle.Color = aimbotSettings.FOVColor
+        FOVCircle.Thickness = 2
+        FOVCircle.Filled = false
+        FOVCircle.Transparency = 1
+    end
+
+    -- State
+    local aimbotConn, infoConn
     local targetPlayer = nil
     local isAiming = false
-    
-    -- Hilfsfunktionen
-    local function UpdateFOV()
+
+    -- Helpers
+    local function updateFOV()
+        if not FOVCircle then return end
         local mousePos = UserInputService:GetMouseLocation()
-        FOVCircle.Visible = aimbotSettings.FOVVisible
-        FOVCircle.Color = aimbotSettings.FOVColor
-        FOVCircle.Radius = aimbotSettings.FOVRadius
-        FOVCircle.Position = Vector2.new(mousePos.X, mousePos.Y)
+        FOVCircle.Visible   = aimbotSettings.FOVVisible
+        FOVCircle.Color     = aimbotSettings.FOVColor
+        FOVCircle.Radius    = aimbotSettings.FOVRadius
+        FOVCircle.Position  = Vector2.new(mousePos.X, mousePos.Y)
     end
-    
-    local function IsPartVisible(part)
-        if not part then return false end
-        
-        local character = LocalPlayer.Character
-        if not character then return false end
-        
-        local head = character:FindFirstChild("Head")
+
+    local function isPartVisible(part)
+        local cam = workspace.CurrentCamera
+        local char = LocalPlayer.Character
+        if not (part and cam and char) then return false end
+        local head = char:FindFirstChild("Head")
         if not head then return false end
-        
+
         local origin = head.Position
-        local direction = (part.Position - origin).Unit * (origin - part.Position).Magnitude
-        
-        local raycastParams = RaycastParams.new()
-        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-        raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
-        raycastParams.IgnoreWater = true
-        
-        local raycastResult = workspace:Raycast(origin, direction, raycastParams)
-        
-        if raycastResult then
-            return raycastResult.Instance:IsDescendantOf(part.Parent)
+        local direction = part.Position - origin
+
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = {char}
+        params.IgnoreWater = true
+
+        local result = workspace:Raycast(origin, direction, params)
+        if result then
+            -- If we hit something, visibility is only true when the hit lies within the target's character
+            return result.Instance:IsDescendantOf(part.Parent)
         end
-        
+        -- No hit: assume clear LOS to target point
         return true
     end
-    
-    local function GetClosestPlayer()
-        local closestPlayer = nil
-        local closestDistance = aimbotSettings.MaxDistance
-        local mousePos = UserInputService:GetMouseLocation()
-        
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
-                -- Team Check
-                if aimbotSettings.IgnoreTeam and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
-                    continue
-                end
-                
-                local character = player.Character
-                local aimPart = character:FindFirstChild(aimbotSettings.AimPart)
-                if not aimPart then
-                    aimPart = character:FindFirstChild("HumanoidRootPart")
-                    if not aimPart then
-                        continue
-                    end
-                end
-                
-                -- Wall Check
-                if aimbotSettings.WallCheck and not IsPartVisible(aimPart) then
-                    continue
-                end
-                
-                -- FOV Check
-                local screenPoint, visible = Camera:WorldToViewportPoint(aimPart.Position)
-                if visible then
-                    local distance = (Vector2.new(mousePos.X, mousePos.Y) - Vector2.new(screenPoint.X, screenPoint.Y)).Magnitude
-                    
-                    if distance <= aimbotSettings.FOVRadius and distance <= closestDistance then
-                        closestPlayer = player
-                        closestDistance = distance
-                    end
-                end
-            end
-        end
-        
-        return closestPlayer
-    end
-    
-    local function PredictPosition(targetPart)
+
+    local function predictPosition(targetPart)
         if not aimbotSettings.Prediction or not targetPart then
-            return targetPart and targetPart.Position or Vector3.new(0, 0, 0)
+            return targetPart and targetPart.Position or nil
         end
-        
-        -- Vorhersage basierend auf Geschwindigkeit
-        local targetVelocity = targetPart.Velocity
-        local distance = (targetPart.Position - Camera.CFrame.Position).Magnitude
-        local travelTime = distance / 2000 -- Angepasste Vorhersage
-        
-        return targetPart.Position + (targetVelocity * travelTime)
+        local cam = workspace.CurrentCamera
+        if not cam then return targetPart.Position end
+        -- Very simple linear prediction; tune projectileSpeed to your weapon
+        local projectileSpeed = 2000
+        local distance = (targetPart.Position - cam.CFrame.Position).Magnitude
+        local travelTime = distance / projectileSpeed
+        return targetPart.Position + (targetPart.Velocity * travelTime)
     end
-    
-    local function AimAt(target)
-        if not target or not target.Character or not Camera then return end
-        
-        local targetPart = target.Character:FindFirstChild(aimbotSettings.AimPart)
-        if not targetPart then
-            targetPart = target.Character:FindFirstChild("HumanoidRootPart")
-            if not targetPart then return end
+
+    local function getClosestPlayer()
+        local cam = workspace.CurrentCamera
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not (cam and myRoot) then return nil end
+
+        local mousePos = UserInputService:GetMouseLocation()
+        local bestPlayer, bestScreenDist = nil, math.huge
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    -- Team gate
+                    if aimbotSettings.IgnoreTeam and plr.Team and LocalPlayer.Team and plr.Team == LocalPlayer.Team then
+                        goto continue
+                    end
+
+                    -- pick aim part
+                    local part = char:FindFirstChild(aimbotSettings.AimPart) or char:FindFirstChild("HumanoidRootPart")
+                    if not part then goto continue end
+
+                    -- world distance (studs)
+                    local studs = (part.Position - myRoot.Position).Magnitude
+                    if studs > aimbotSettings.MaxDistance then
+                        goto continue
+                    end
+
+                    -- wall / LOS
+                    if aimbotSettings.WallCheck and not isPartVisible(part) then
+                        goto continue
+                    end
+
+                    local screenPoint, onScreen = cam:WorldToViewportPoint(part.Position)
+                    if aimbotSettings.VisibleCheck and not onScreen then
+                        goto continue
+                    end
+
+                    local screenDist = (Vector2.new(mousePos.X, mousePos.Y) - Vector2.new(screenPoint.X, screenPoint.Y)).Magnitude
+                    if screenDist <= aimbotSettings.FOVRadius and screenDist < bestScreenDist then
+                        bestScreenDist = screenDist
+                        bestPlayer = plr
+                    end
+                end
+            end
+            ::continue::
         end
-        
-        local predictedPosition = PredictPosition(targetPart)
-        local currentCFrame = Camera.CFrame
-        
-        if currentCFrame then
-            local currentLook = currentCFrame.LookVector
-            local targetLook = (predictedPosition - currentCFrame.Position).Unit
-            
-            -- Smoothing anwenden
-            local smoothedLook = currentLook:Lerp(targetLook, 1 - aimbotSettings.Smoothness)
-            Camera.CFrame = CFrame.new(currentCFrame.Position, currentCFrame.Position + smoothedLook)
-        end
+
+        return bestPlayer
     end
-    
-    local function Triggerbot()
-        if aimbotSettings.Triggerbot and UserInputService:IsKeyDown(aimbotSettings.TriggerbotKey) then
-            local target = GetClosestPlayer()
-            if target then
-                -- Simuliere Mausklick für automatisches Schießen
+
+    local function aimAt(target)
+        if not target or not target.Character then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+
+        local part = target.Character:FindFirstChild(aimbotSettings.AimPart) or target.Character:FindFirstChild("HumanoidRootPart")
+        if not part then return end
+
+        local predicted = predictPosition(part) or part.Position
+        local from = cam.CFrame.Position
+        local desired = (predicted - from).Unit
+
+        local alpha = math.clamp(1 - aimbotSettings.Smoothness, 0, 1) -- 0.1 fast / 1.0 slow
+        local newLook = cam.CFrame.LookVector:Lerp(desired, alpha)
+
+        cam.CFrame = CFrame.new(from, from + newLook)
+    end
+
+    local function triggerbotTick()
+        if not aimbotSettings.Triggerbot then return end
+        if not UserInputService:IsKeyDown(aimbotSettings.TriggerbotKey) then return end
+        local tgt = getClosestPlayer()
+        if not tgt then return end
+        if canMouseClick then
+            if typeof(mouse1click) == "function" then
                 mouse1click()
+            elseif typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
+                mouse1press()
+                task.wait() -- one frame
+                mouse1release()
             end
         end
     end
-    
-    -- Aimbot Loop
-    local function ToggleAimbot()
-        if aimbotConnection then
-            aimbotConnection:Disconnect()
-            aimbotConnection = nil
-        end
-        
-        if aimbotSettings.Enabled then
-            aimbotConnection = RunService.RenderStepped:Connect(function()
-                UpdateFOV()
-                
-                if aimbotSettings.Enabled then
-                    local closestPlayer = GetClosestPlayer()
-                    if closestPlayer then
-                        targetPlayer = closestPlayer
-                        AimAt(targetPlayer)
-                        isAiming = true
-                        Triggerbot()
-                    else
-                        isAiming = false
-                        targetPlayer = nil
-                    end
-                else
-                    isAiming = false
-                    targetPlayer = nil
-                end
-            end)
-        end
+
+    local function stopLoop()
+        if aimbotConn then aimbotConn:Disconnect(); aimbotConn = nil end
+        isAiming, targetPlayer = false, nil
     end
-    
-    -- Keybind Handler
-    local function SetupKeybinds()
-        if keybindConnection then
-            keybindConnection:Disconnect()
-        end
-        
-        keybindConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-            if gameProcessed then return end
-            
-            if input.KeyCode == aimbotSettings.Keybind then
-                aimbotSettings.Enabled = not aimbotSettings.Enabled
-                ToggleAimbot()
-                
-                OrionLib:MakeNotification({
-                    Name = "Aimbot",
-                    Content = "Aimbot " .. (aimbotSettings.Enabled and "aktiviert" or "deaktiviert"),
-                    Time = 3
-                })
+
+    local function startLoop()
+        stopLoop()
+        if not aimbotSettings.Enabled then return end
+        aimbotConn = RunService.RenderStepped:Connect(function()
+            updateFOV()
+
+            local cam = workspace.CurrentCamera
+            if not cam then return end
+
+            if aimbotSettings.Enabled then
+                local closest = getClosestPlayer()
+                if closest then
+                    targetPlayer = closest
+                    aimAt(closest)
+                    isAiming = true
+                    triggerbotTick()
+                else
+                    isAiming, targetPlayer = false, nil
+                end
+            else
+                isAiming, targetPlayer = false, nil
             end
         end)
     end
-    
-    -- UI Elements (Vortex Style)
-    local MainSection = tab:AddSection({
-        Name = "Aimbot"
-    })
-    
-    local AimbotToggle = MainSection:AddToggle({
+
+    ----------------------------------------------------------------
+    -- UI (Orion: matches your API: AddToggle / AddBind / AddDropdown / AddSlider / AddColorpicker)
+    ----------------------------------------------------------------
+
+    local MainSection = tab:AddSection({ Name = "Aimbot" })
+
+    MainSection:AddToggle({
         Name = "Enable Aimbot",
         Default = aimbotSettings.Enabled,
-        Callback = function(value)
-            aimbotSettings.Enabled = value
-            ToggleAimbot()
+        Callback = function(v)
+            aimbotSettings.Enabled = v
+            if v then
+                startLoop()
+                OrionLib:MakeNotification({ Name = "Aimbot", Content = "Aimbot enabled", Time = 3 })
+            else
+                stopLoop()
+                OrionLib:MakeNotification({ Name = "Aimbot", Content = "Aimbot disabled", Time = 3 })
+            end
         end
     })
-    
-    local Keybind = MainSection:AddKeybind({
+
+    MainSection:AddBind({
         Name = "Aimbot Keybind",
         Default = aimbotSettings.Keybind,
-        Callback = function(key)
-            aimbotSettings.Keybind = key
-            SetupKeybinds()
+        Hold = false,
+        Callback = function()
+            aimbotSettings.Enabled = not aimbotSettings.Enabled
+            if aimbotSettings.Enabled then
+                startLoop()
+                OrionLib:MakeNotification({ Name = "Aimbot", Content = "Aimbot enabled (keybind)", Time = 3 })
+            else
+                stopLoop()
+                OrionLib:MakeNotification({ Name = "Aimbot", Content = "Aimbot disabled (keybind)", Time = 3 })
+            end
         end
     })
-    
-    local PredictionToggle = MainSection:AddToggle({
+
+    MainSection:AddToggle({
         Name = "Hit Prediction",
         Default = aimbotSettings.Prediction,
-        Callback = function(value)
-            aimbotSettings.Prediction = value
-        end
+        Callback = function(v) aimbotSettings.Prediction = v end
     })
-    
-    local AimPartDropdown = MainSection:AddDropdown({
+
+    MainSection:AddDropdown({
         Name = "Aim Part",
         Default = aimbotSettings.AimPart,
-        Options = {"Head", "HumanoidRootPart", "UpperTorso", "LowerTorso"},
-        Callback = function(value)
-            aimbotSettings.AimPart = value
-        end
+        Options = { "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso" },
+        Callback = function(v) aimbotSettings.AimPart = v end
     })
-    
-    local IgnoreTeamToggle = MainSection:AddToggle({
+
+    MainSection:AddToggle({
         Name = "Ignore Team",
         Default = aimbotSettings.IgnoreTeam,
-        Callback = function(value)
-            aimbotSettings.IgnoreTeam = value
-        end
+        Callback = function(v) aimbotSettings.IgnoreTeam = v end
     })
-    
-    local FOVSection = tab:AddSection({
-        Name = "FOV Settings"
-    })
-    
-    local FOVToggle = FOVSection:AddToggle({
+
+    local FOVSection = tab:AddSection({ Name = "FOV Settings" })
+
+    FOVSection:AddToggle({
         Name = "Show FOV",
         Default = aimbotSettings.FOVVisible,
-        Callback = function(value)
-            aimbotSettings.FOVVisible = value
+        Callback = function(v)
+            aimbotSettings.FOVVisible = v
+            if FOVCircle then FOVCircle.Visible = v end
         end
     })
-    
-    local FOVColor = FOVSection:AddColorpicker({
+
+    FOVSection:AddColorpicker({
         Name = "FOV Color",
         Default = aimbotSettings.FOVColor,
-        Callback = function(value)
-            aimbotSettings.FOVColor = value
+        Callback = function(v)
+            aimbotSettings.FOVColor = v
+            if FOVCircle then FOVCircle.Color = v end
         end
     })
-    
-    local FOVRadiusSlider = FOVSection:AddSlider({
+
+    FOVSection:AddSlider({
         Name = "FOV Size",
-        Min = 10,
-        Max = 300,
+        Min = 10, Max = 300, Increment = 5,
         Default = aimbotSettings.FOVRadius,
-        Color = Color3.fromRGB(0, 255, 0),
-        Increment = 5,
-        Callback = function(value)
-            aimbotSettings.FOVRadius = value
+        Callback = function(v)
+            aimbotSettings.FOVRadius = v
+            if FOVCircle then FOVCircle.Radius = v end
         end
     })
-    
-    local SmoothnessSlider = FOVSection:AddSlider({
+
+    FOVSection:AddSlider({
         Name = "Smoothness",
-        Min = 0.1,
-        Max = 1,
+        Min = 0.1, Max = 1, Increment = 0.05,
         Default = aimbotSettings.Smoothness,
-        Color = Color3.fromRGB(0, 0, 255),
-        Increment = 0.05,
-        Callback = function(value)
-            aimbotSettings.Smoothness = value
-        end
+        Callback = function(v) aimbotSettings.Smoothness = v end
     })
-    
-    local DistanceSection = tab:AddSection({
-        Name = "Distance Settings"
-    })
-    
-    local MaxDistanceSlider = DistanceSection:AddSlider({
+
+    local DistSection = tab:AddSection({ Name = "Distance / Checks" })
+
+    DistSection:AddSlider({
         Name = "Max Distance",
-        Min = 100,
-        Max = 5000,
+        Min = 100, Max = 5000, Increment = 50,
         Default = aimbotSettings.MaxDistance,
-        Color = Color3.fromRGB(255, 0, 0),
-        Increment = 50,
         ValueName = "Studs",
-        Callback = function(value)
-            aimbotSettings.MaxDistance = value
-        end
+        Callback = function(v) aimbotSettings.MaxDistance = v end
     })
-    
-    local WallCheckToggle = DistanceSection:AddToggle({
-        Name = "Wall Check",
+
+    DistSection:AddToggle({
+        Name = "Wall Check (raycast)",
         Default = aimbotSettings.WallCheck,
-        Callback = function(value)
-            aimbotSettings.WallCheck = value
-        end
+        Callback = function(v) aimbotSettings.WallCheck = v end
     })
-    
-    local TriggerbotSection = tab:AddSection({
-        Name = "Triggerbot"
+
+    DistSection:AddToggle({
+        Name = "Require On-Screen",
+        Default = aimbotSettings.VisibleCheck,
+        Callback = function(v) aimbotSettings.VisibleCheck = v end
     })
-    
-    local TriggerbotToggle = TriggerbotSection:AddToggle({
-        Name = "Enable Triggerbot",
+
+    local TrigSection = tab:AddSection({ Name = "Triggerbot" })
+
+    TrigSection:AddToggle({
+        Name = "Enable Triggerbot (hold key)",
         Default = aimbotSettings.Triggerbot,
-        Callback = function(value)
-            aimbotSettings.Triggerbot = value
-        end
+        Callback = function(v) aimbotSettings.Triggerbot = v end
     })
-    
-    local TriggerbotKeybind = TriggerbotSection:AddKeybind({
+
+    TrigSection:AddBind({
         Name = "Triggerbot Key",
         Default = aimbotSettings.TriggerbotKey,
-        Callback = function(key)
-            aimbotSettings.TriggerbotKey = key
+        Hold = true,
+        Callback = function(holding)
+            -- No toggle logic here; we poll IsKeyDown each frame when Enabled
         end
     })
-    
-    -- Info Section
-    local InfoSection = tab:AddSection({
-        Name = "Status"
-    })
-    
-    local StatusLabel = InfoSection:AddLabel("Status: Inactive")
-    local TargetLabel = InfoSection:AddLabel("Target: None")
+
+    -- Status UI
+    local InfoSection = tab:AddSection({ Name = "Status" })
+    local StatusLabel   = InfoSection:AddLabel("Status: Inactive")
+    local TargetLabel   = InfoSection:AddLabel("Target: None")
     local DistanceLabel = InfoSection:AddLabel("Distance: -")
-    
-    -- Update Info Labels
-    local infoConnection
-    infoConnection = RunService.Heartbeat:Connect(function()
+
+    if infoConn then infoConn:Disconnect() end
+    infoConn = RunService.Heartbeat:Connect(function()
         if aimbotSettings.Enabled and isAiming and targetPlayer then
             StatusLabel:Set("Status: Active (Target Locked)")
             TargetLabel:Set("Target: " .. targetPlayer.Name)
-            
-            if targetPlayer.Character and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                local rootPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-                local localRoot = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                
-                if rootPart and localRoot then
-                    local distance = (rootPart.Position - localRoot.Position).Magnitude
-                    DistanceLabel:Set("Distance: " .. math.floor(distance) .. " Studs")
-                end
+
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local tRoot  = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if myRoot and tRoot then
+                local d = (tRoot.Position - myRoot.Position).Magnitude
+                DistanceLabel:Set(("Distance: %d Studs"):format(math.floor(d)))
             end
         else
-            StatusLabel:Set("Status: " .. (aimbotSettings.Enabled and "Active (No Target)" or "Inactive"))
+            StatusLabel:Set(aimbotSettings.Enabled and "Status: Active (No Target)" or "Status: Inactive")
             TargetLabel:Set("Target: None")
             DistanceLabel:Set("Distance: -")
         end
     end)
-    
-    -- Initialisierung
-    SetupKeybinds()
-    UpdateFOV()
-    
-    -- Cleanup
-    tab:OnClose(function()
-        if aimbotConnection then
-            aimbotConnection:Disconnect()
+
+    -- No tab:OnClose in your Orion; expose a tiny cleanup toggle
+    local CleanupSection = tab:AddSection({ Name = "Maintenance" })
+    CleanupSection:AddButton({
+        Name = "Stop Aimbot & Cleanup",
+        Callback = function()
+            stopLoop()
+            if infoConn then infoConn:Disconnect(); infoConn = nil end
+            if FOVCircle and FOVCircle.Remove then FOVCircle:Remove(); FOVCircle = nil end
+            OrionLib:MakeNotification({ Name = "Aimbot", Content = "Stopped & cleaned up.", Time = 3 })
         end
-        if keybindConnection then
-            keybindConnection:Disconnect()
-        end
-        if infoConnection then
-            infoConnection:Disconnect()
-        end
-        if FOVCircle then
-            FOVCircle:Remove()
-        end
-    end)
+    })
 end
