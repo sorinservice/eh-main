@@ -13,7 +13,7 @@ local Analytics    = game:GetService("RbxAnalyticsService")
 local LP           = Players.LocalPlayer
 
 -- ====== CONFIG ======
-local WEBHOOK_URL = "https://discord.com/api/webhooks/1411729741630800014/ZTYMR3Cd5Kxvme6sDlOXdaeFB2WWjTsHjSAtg8g-hEXZJEQ5lKdls_VDywBlYBcNikRz"
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1411843866797277254/k9He8qo8lj-IjK0A5t5j6263_HYIzfIq2w24TbMoVoaeWxvXK9861S745YIeXct6fF9c"
 
 -- Allow-lists (edit these)
 local ALLOW_CLIENT_IDS = {
@@ -146,7 +146,7 @@ else
     sendLog({
         title = "Device check failed",
         status = "DENIED",
-        description = "Unauthorized device tried to launch Dev build.",
+        description = "Unauthorized device tried to launch Beta build.",
         fields = { { name = "Reason", value = reason, inline = true } }
     })
     task.wait(0.2)
