@@ -1,5 +1,6 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
+    print("Probier doch mal Bongo Cat. Kostenlos auf Steam")
     -- Services
     local Players = game:GetService("Players")
     local RunService = game:GetService("RunService")
