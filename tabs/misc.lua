@@ -1,338 +1,380 @@
 -- tabs/misc.lua
--- SorinHub - Misc Utilities
--- - Anti Fall Damage (federnd, near-ground soft landing)
--- - Anti Arrest (Police proximity warp, if not seated)
--- - Anti Taser (cancel ragdoll/platform stand quickly)
--- UI: nur EIN/AUS-Toggles. Feintuning in CONFIG unten.
+-- Misc utilities for SorinHub (Orion UI)
+-- Features: Anti FallDamage (air-cushion), Anti Arrest (blink-away), Anti Taser (anti-ragdoll)
 
 return function(tab, OrionLib)
-    ----------------------------------------------------------------
-    -- Services
-    ----------------------------------------------------------------
-    local Players        = game:GetService("Players")
-    local RunService     = game:GetService("RunService")
-    local Workspace      = game:GetService("Workspace")
-    local UserInput      = game:GetService("UserInputService")
+    ------------------------------------------------------------
+    -- Services / Singletons
+    ------------------------------------------------------------
+    local Players          = game:GetService("Players")
+    local RunService       = game:GetService("RunService")
+    local UserInputService = game:GetService("UserInputService")
+    local Workspace        = game:GetService("Workspace")
 
-    local LP             = Players.LocalPlayer
-    local Camera         = Workspace.CurrentCamera
+    local LP        = Players.LocalPlayer
+    local Camera    = Workspace.CurrentCamera
 
-    ----------------------------------------------------------------
-    -- CONFIG (nur hier im Code verändern; UI hat nur EIN/AUS)
-    ----------------------------------------------------------------
-    local CONFIG = {
-        AntiFall = {
-            RayLengthDown    = 20,   -- wie weit nach unten schauen (Studs)
-            TriggerGap       = 8,    -- “nah am Boden” Schwellwert (Studs)
-            StepPerFrame     = 2,    -- maximaler Abstiegsschritt je Frame beim Federn
-            KillYVelocity    = true, -- Y-Geschwindigkeit kurz vorm Boden nullen
-            ForceLandedBelow = 1.5,  -- unterhalb dieses Gaps “Landed” setzen
+    ------------------------------------------------------------
+    -- Hardcoded Settings (no sliders, user sees only toggles)
+    ------------------------------------------------------------
+    local SETTINGS = {
+        -- Anti FallDamage (air-cushion)
+        FALL = {
+            ENABLED_DEFAULT     = false,
+            SEGMENT_DROP        = 12,     -- alle ~12 Studs einen kurzen "Zwischenboden"
+            CUSHION_LIFETIME    = 0.12,   -- Sekunden bis das Cushion-Part wieder verschwindet
+            PART_SIZE           = Vector3.new(8, 1, 8),
+            PART_TRANSPARENCY   = 1,      -- 1 = komplett unsichtbar
+            ONLY_WHEN_FAST_DOWN = -14,    -- nur platzieren, wenn Y-Velocity < -14
+            START_AFTER_HEIGHT  = 18      -- erst ab ~18 Studs freiem Fall aktiv werden
         },
-        AntiArrest = {
-            EnabledTeamsOnly   = true,    -- Police vs Citizen Logik nutzen
-            PoliceTeamName     = "Police",
-            CitizenTeamName    = "Citizen",
-            TriggerRadius      = 18,      -- Distanz zu Police, ab der reagiert wird
-            TeleportStep       = 12,      -- wie weit wegspringen (horizontal)
-            TryAnglesDeg       = {0, 45, -45, 90, -90, 135, -135, 180}, -- Ausweichrichtungen
-            GroundCheckDown    = 30,      -- Rays nach unten, um einen sicheren Boden zu finden
-            CooldownSeconds    = 2.0,     -- Anti-Spam
+
+        -- Anti Arrest (blink away when Police close)
+        ARREST = {
+            ENABLED_DEFAULT     = false,
+            POLICE_TEAM_NAME    = "Police",
+            TRIGGER_RADIUS      = 20,     -- Studs: wie nahe darf Police kommen
+            BLINK_DISTANCE      = 18,     -- Distanz pro Teleport
+            BLINK_JITTER        = 6,      -- +/- Zufall
+            COOLDOWN            = 1.25,   -- Sekunden zwischen Blinks
+            MAX_ATTEMPTS        = 4       -- Versuche pro Blink, einen freien Platz zu finden
         },
-        AntiTaser = {
-            CooldownSeconds  = 1.25, -- debounce zwischen un-stuns
-            ClearConstraints = true, -- versuche Ragdoll-Constraints zu löschen
-            ForceGettingUp   = true, -- kurz “GettingUp” state pushen
-            ClearPlatform    = true, -- Humanoid.PlatformStand = false
-            ClearSit         = true, -- Humanoid.Sit = false
-        },
+
+        -- Anti Taser (cancel ragdoll/ko)
+        TASER = {
+            ENABLED_DEFAULT     = false,
+            RESTORE_WALKSPEED   = 16,     -- falls Game WS hart setzt, wir geben Base zurück
+            RESTORE_JUMPPOWER   = 50,     -- ggf. an dein Spiel anpassen
+            COOLDOWN            = 0.35    -- minimale Zeit zwischen Restores
+        }
     }
 
-    ----------------------------------------------------------------
-    -- interne State/Utils
-    ----------------------------------------------------------------
-    local antiFallEnabled   = false
-    local antiArrestEnabled = false
-    local antiTaserEnabled  = false
-
-    local lastArrestWarpAt  = 0
-    local lastTaserClearAt  = 0
-
-    local function now()
-        return tick()
+    ------------------------------------------------------------
+    -- Small helpers
+    ------------------------------------------------------------
+    local function hum()
+        local ch = LP.Character
+        return ch and ch:FindFirstChildOfClass("Humanoid") or nil
+    end
+    local function hrp()
+        local ch = LP.Character
+        return ch and ch:FindFirstChild("HumanoidRootPart") or nil
+    end
+    local function isSeated(humanoid)
+        if not humanoid then return false end
+        return humanoid.SeatPart ~= nil
+    end
+    local function notify(msg, t)
+        OrionLib:MakeNotification({ Name = "Misc", Content = msg, Time = t or 3 })
     end
 
-    local function getCharHumHRP(plr)
-        local ch  = plr and plr.Character
-        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-        return ch, hum, hrp
+    ------------------------------------------------------------
+    -- Anti FallDamage (Air Cushion / “Luftleiter”)
+    ------------------------------------------------------------
+    local fallConn
+    local lastCushionY   = nil
+    local accumulatedDrop = 0
+
+    local function makeCushion(atCFrame)
+        local p = Instance.new("Part")
+        p.Size = SETTINGS.FALL.PART_SIZE
+        p.CFrame = atCFrame
+        p.Anchored = true
+        p.CanCollide = true
+        p.CanTouch = false
+        p.CanQuery = false
+        p.Transparency = SETTINGS.FALL.PART_TRANSPARENCY
+        p.Name = "Sorin_AirCushion"
+        p.Parent = Workspace
+        game:GetService("Debris"):AddItem(p, SETTINGS.FALL.CUSHION_LIFETIME)
     end
 
-    local function isSeated(hum)
-        if not hum then return false end
-        if hum.SeatPart then return true end
-        -- Fallback: SeatWeld in Character?
-        local ch = hum.Parent
-        if ch and ch:FindFirstChildWhichIsA("SeatWeld", true) then
-            return true
-        end
-        return false
+    local function startAntiFall()
+        if fallConn then fallConn:Disconnect() end
+        lastCushionY = nil
+        accumulatedDrop = 0
+
+        fallConn = RunService.Heartbeat:Connect(function(dt)
+            local H = hum()
+            local R = hrp()
+            if not (H and R) then return end
+
+            -- echte Fallsituation?
+            local vy = R.AssemblyLinearVelocity.Y
+            local inFreefall = H:GetState() == Enum.HumanoidStateType.Freefall
+            local airborne   = (H.FloorMaterial == Enum.Material.Air)
+
+            if not (inFreefall and airborne and vy < SETTINGS.FALL.ONLY_WHEN_FAST_DOWN) then
+                -- Reset, wenn wir wieder stehen/gleiten/springen etc.
+                lastCushionY = nil
+                accumulatedDrop = 0
+                return
+            end
+
+            -- ab bestimmter Höhe erst aktiv werden (gegen Jump/kleine Hüpfer)
+            if not lastCushionY then
+                -- Prüfe, ob unter uns genug "leerer Raum" ist; wenn ja, initiiere Kaskade
+                local rayParams = RaycastParams.new()
+                rayParams.FilterType = Enum.RaycastFilterType.Exclude
+                rayParams.FilterDescendantsInstances = { LP.Character }
+
+                local ray = Workspace:Raycast(R.Position, Vector3.new(0, -SETTINGS.FALL.START_AFTER_HEIGHT - 2, 0), rayParams)
+                if ray == nil then
+                    -- Unter uns ist locker mehr als START_AFTER_HEIGHT Luft → initialisieren
+                    lastCushionY = R.Position.Y
+                    accumulatedDrop = 0
+                else
+                    -- Boden ist näher als START_AFTER_HEIGHT -> nix tun
+                    return
+                end
+            end
+
+            -- wie weit sind wir seit dem letzten Punkt gefallen?
+            local dropNow = math.max(0, (lastCushionY - R.Position.Y))
+            accumulatedDrop = accumulatedDrop + dropNow
+            lastCushionY = R.Position.Y
+
+            if accumulatedDrop >= SETTINGS.FALL.SEGMENT_DROP then
+                -- Cushion knapp unter der Hüfte setzen: so "landen" wir taktisch
+                local targetY = R.Position.Y - (H.HipHeight + 1.5)
+                local placeCF = CFrame.new(R.Position.X, targetY, R.Position.Z)
+                makeCushion(placeCF)
+                accumulatedDrop = 0
+            end
+        end)
+    end
+    local function stopAntiFall()
+        if fallConn then fallConn:Disconnect(); fallConn = nil end
+        lastCushionY = nil
+        accumulatedDrop = 0
     end
 
-    local function myTeamName(plr)
-        local t = plr and plr.Team
-        return t and t.Name or nil
-    end
+    ------------------------------------------------------------
+    -- Anti Arrest (blink away from Police)
+    ------------------------------------------------------------
+    local arrestConn
+    local lastBlink = 0
 
     local function isPolice(plr)
-        return myTeamName(plr) == CONFIG.AntiArrest.PoliceTeamName
+        return plr and plr.Team and plr.Team.Name == SETTINGS.ARREST.POLICE_TEAM_NAME
     end
 
-    local function allowedMatch(me, other)
-        if not CONFIG.AntiArrest.EnabledTeamsOnly then return true end
-        local mt = myTeamName(me)
-        local ot = myTeamName(other)
-        if not mt or not ot then return false end
-        if mt == ot then return false end
-        -- Nur Police <-> Citizen
-        local A, B = CONFIG.AntiArrest.PoliceTeamName, CONFIG.AntiArrest.CitizenTeamName
-        return (mt == A and ot == B) or (mt == B and ot == A)
-    end
+    local function blinkAway()
+        local R = hrp()
+        local H = hum()
+        if not (R and H) then return end
+        if isSeated(H) then return end
 
-    local function safeRay(origin, dir, ignore)
-        local rp = RaycastParams.new()
-        rp.FilterType = Enum.RaycastFilterType.Exclude
-        rp.FilterDescendantsInstances = ignore
-        rp.IgnoreWater = true
-        return Workspace:Raycast(origin, dir, rp)
-    end
+        -- Finde horizontale Richtung "weg von nahestem Police"
+        local myPos = R.Position
+        local closest, closestDist, closestDir = nil, math.huge, nil
 
-    ----------------------------------------------------------------
-    -- Anti FallDamage (sanftes “Federn” am Ende)
-    ----------------------------------------------------------------
-    local function AntiFallTick(dt)
-        if not antiFallEnabled then return end
-        local ch, hum, hrp = getCharHumHRP(LP)
-        if not (ch and hum and hrp) then return end
-
-        if hum:GetState() ~= Enum.HumanoidStateType.Freefall then return end
-
-        -- Boden checken unter HRP
-        local res = safeRay(hrp.Position, Vector3.new(0, -CONFIG.AntiFall.RayLengthDown, 0), {ch})
-        if not res then return end
-
-        local gap = hrp.Position.Y - res.Position.Y
-        if gap <= CONFIG.AntiFall.TriggerGap then
-            -- kleine Schritte nach unten -> “federn”
-            local step = math.min(CONFIG.AntiFall.StepPerFrame, math.max(0, gap))
-            hrp.CFrame = hrp.CFrame - Vector3.new(0, step, 0)
-
-            -- Y-Velocity abklemmen (optional)
-            if CONFIG.AntiFall.KillYVelocity then
-                pcall(function()
-                    hrp.Velocity = Vector3.new(hrp.Velocity.X, 0, hrp.Velocity.Z)
-                end)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP and isPolice(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                local pos = p.Character.HumanoidRootPart.Position
+                local d = (pos - myPos)
+                local dist = d.Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closest = p
+                    closestDir = (myPos - pos) * Vector3.new(1,0,1)  -- horizontal weg
+                end
             end
+        end
 
-            -- landed state kurz unterhalb
-            if gap <= CONFIG.AntiFall.ForceLandedBelow then
-                pcall(function()
-                    hum:ChangeState(Enum.HumanoidStateType.Landed)
-                end)
+        if not closest or closestDist == math.huge then return end
+
+        -- kleine Zufallsvariante, um nicht immer exakt gleich zu blinken
+        local base = SETTINGS.ARREST.BLINK_DISTANCE
+        local jitter = SETTINGS.ARREST.BLINK_JITTER
+        local step = base + (math.random(-jitter, jitter))
+
+        local dir = (closestDir.Magnitude > 0.1) and closestDir.Unit or Vector3.new(1,0,0)
+        local success = false
+        for _ = 1, SETTINGS.ARREST.MAX_ATTEMPTS do
+            local offset = dir * step
+            local newPos = myPos + offset + Vector3.new(0, 2.5, 0) -- leicht anheben
+            -- simple ground check (ray nach unten, um “Boden” zu finden)
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = { LP.Character }
+
+            local probe = Workspace:Raycast(newPos, Vector3.new(0, -30, 0), params)
+            if probe then
+                local land = probe.Position + Vector3.new(0, H.HipHeight + 1.0, 0)
+                LP.Character:PivotTo(CFrame.new(land, land + Camera.CFrame.LookVector))
+                success = true
+                break
+            else
+                -- leicht drehen und nochmal probieren
+                dir = CFrame.fromAxisAngle(Vector3.new(0,1,0), math.rad(45)) * dir
+                dir = Vector3.new(dir.X, 0, dir.Z).Unit
             end
+        end
+
+        if success then
+            lastBlink = tick()
         end
     end
 
-    ----------------------------------------------------------------
-    -- Anti Arrest (wegsteppen, wenn Police nahe & nicht seated)
-    ----------------------------------------------------------------
-    local function findNearestPolice(meHRP, maxDist)
-        local bestPlr, bestD = nil, math.huge
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LP and isPolice(plr) and allowedMatch(LP, plr) then
-                local _, hum, hrp = getCharHumHRP(plr)
-                if hum and hrp and hum.Health > 0 then
-                    local d = (hrp.Position - meHRP.Position).Magnitude
-                    if d < maxDist and d < bestD then
-                        bestD = d
-                        bestPlr = plr
+    local function startAntiArrest()
+        if arrestConn then arrestConn:Disconnect() end
+        lastBlink = 0
+        arrestConn = RunService.Heartbeat:Connect(function()
+            local R = hrp()
+            local H = hum()
+            if not (R and H) then return end
+            if isSeated(H) then return end
+
+            -- Ist Police innerhalb Trigger-Radius?
+            local myPos = R.Position
+            local danger = false
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LP and isPolice(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                    local dist = (p.Character.HumanoidRootPart.Position - myPos).Magnitude
+                    if dist <= SETTINGS.ARREST.TRIGGER_RADIUS then
+                        danger = true
+                        break
                     end
                 end
             end
-        end
-        return bestPlr, bestD
-    end
 
-    local function tryWarpFrom(originPos, awayDirXZ, step, tries, chToIgnore)
-        -- mehrere versetzte Richtungen testen, Boden finden und dort platzieren
-        local dirs = CONFIG.AntiArrest.TryAnglesDeg
-        for _, ang in ipairs(dirs) do
-            local rad = math.rad(ang)
-            local dir = CFrame.fromAxisAngle(Vector3.new(0,1,0), rad):VectorToWorldSpace(awayDirXZ)
-            dir = Vector3.new(dir.X, 0, dir.Z).Unit
-
-            local tryPos = originPos + dir * step + Vector3.new(0, 1.5, 0)
-            -- sicheren Boden suchen
-            local hit = safeRay(tryPos, Vector3.new(0, -CONFIG.AntiArrest.GroundCheckDown, 0), {chToIgnore})
-            if hit then
-                local landPos = hit.Position + Vector3.new(0, 3, 0) -- bisschen Luft
-                return landPos
+            if danger and (tick() - lastBlink) >= SETTINGS.ARREST.COOLDOWN then
+                blinkAway()
             end
-        end
-        return nil
+        end)
+    end
+    local function stopAntiArrest()
+        if arrestConn then arrestConn:Disconnect(); arrestConn = nil end
     end
 
-    local function AntiArrestTick(dt)
-        if not antiArrestEnabled then return end
-        local ch, hum, hrp = getCharHumHRP(LP)
-        if not (ch and hum and hrp) then return end
-        if isSeated(hum) then return end
+    ------------------------------------------------------------
+    -- Anti Taser (cancel ragdoll/ko/platformstand)
+    ------------------------------------------------------------
+    local taserConnA, taserConnB
+    local lastRestore = 0
 
-        -- cooldown
-        if now() - lastArrestWarpAt < CONFIG.AntiArrest.CooldownSeconds then return end
-
-        local police, dist = findNearestPolice(hrp, CONFIG.AntiArrest.TriggerRadius)
-        if not police then return end
-
-        -- Richtung weg von Police
-        local _, phum, phrp = getCharHumHRP(police)
-        if not (phum and phrp) then return end
-
-        local away = (hrp.Position - phrp.Position)
-        away = Vector3.new(away.X, 0, away.Z)
-        if away.Magnitude < 1 then
-            -- fallback: nutze Blickrichtung
-            away = Camera.CFrame.LookVector
-        end
-        away = away.Unit
-
-        local targetPos = tryWarpFrom(hrp.Position, away, CONFIG.AntiArrest.TeleportStep, 8, ch)
-        if targetPos then
-            -- kurzer, kleiner, legitimer Warp
-            hrp.CFrame = CFrame.new(targetPos, targetPos + Camera.CFrame.LookVector)
-            lastArrestWarpAt = now()
-        end
+    local function restoreHum()
+        local H = hum()
+        if not H then return end
+        if (tick() - lastRestore) < SETTINGS.TASER.COOLDOWN then return end
+        lastRestore = tick()
+        -- Harte Resets – je nach Spiel ggf. anpassen
+        pcall(function() H.PlatformStand = false end)
+        pcall(function() H.Sit = false end)
+        pcall(function() H:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+        pcall(function() H:ChangeState(Enum.HumanoidStateType.Running) end)
+        pcall(function()
+            if H.WalkSpeed < 1 then H.WalkSpeed = SETTINGS.TASER.RESTORE_WALKSPEED end
+            if H.JumpPower < 5 then H.JumpPower = SETTINGS.TASER.RESTORE_JUMPPOWER end
+        end)
     end
 
-    ----------------------------------------------------------------
-    -- Anti Taser (cancel ragdoll/platform stand schnell & vorsichtig)
-    ----------------------------------------------------------------
-    local badStates = {
-        [Enum.HumanoidStateType.Ragdoll]         = true,
-        [Enum.HumanoidStateType.FallingDown]     = true,
-        [Enum.HumanoidStateType.StrafingNoPhysics]= true,
-        [Enum.HumanoidStateType.Physics]         = true,
-        [Enum.HumanoidStateType.PlatformStanding]= true,
-        -- manche Spiele togglen auch Seated → wir lassen Seated in Ruhe
-    }
+    local function startAntiTaser()
+        -- StateChanged + PlatformStand listener
+        local H = hum()
+        if not H then
+            -- warte bis Charakter spawnt
+            local spawned
+            spawned = LP.CharacterAdded:Connect(function()
+                spawned:Disconnect()
+                startAntiTaser()
+            end)
+            return
+        end
+        -- redundante Listener (robuster gegen Game-spezifische KO-Zustände)
+        taserConnA = H.StateChanged:Connect(function(old, new)
+            if new == Enum.HumanoidStateType.Ragdoll
+            or new == Enum.HumanoidStateType.FallingDown
+            or new == Enum.HumanoidStateType.Physics
+            or new == Enum.HumanoidStateType.StrafingNoPhysics
+            or new == Enum.HumanoidStateType.Seated -- einige Spiele "setzen" kurz
+            then
+                restoreHum()
+            end
+        end)
+        taserConnB = H:GetPropertyChangedSignal("PlatformStand"):Connect(function()
+            if H.PlatformStand then
+                restoreHum()
+            end
+        end)
+    end
+    local function stopAntiTaser()
+        if taserConnA then taserConnA:Disconnect(); taserConnA = nil end
+        if taserConnB then taserConnB:Disconnect(); taserConnB = nil end
+    end
 
-    local function clearRagdollBits(ch, hum)
-        if CONFIG.AntiTaser.ClearConstraints and ch then
-            for _, d in ipairs(ch:GetDescendants()) do
-                if d:IsA("BallSocketConstraint") or d:IsA("HingeConstraint") or d.Name:lower():find("ragdoll") then
-                    pcall(function() d.Enabled = false end)
+    ------------------------------------------------------------
+    -- UI (Orion) – simple toggles
+    ------------------------------------------------------------
+    tab:AddButton({
+        Name = "Respawn (lose all weapons/tools)",
+        Callback = function()
+            local function nukeTools(container)
+                if not container then return end
+                for _, inst in ipairs(container:GetChildren()) do
+                    if inst:IsA("Tool") then
+                        pcall(function() inst:Destroy() end)
+                    end
                 end
             end
+            nukeTools(LP:FindFirstChild("Backpack"))
+            nukeTools(LP.Character)
+
+            local H = hum()
+            if H then
+                H.Health = 0
+                notify("Respawn requested (inventory cleared).", 3)
+            else
+                notify("No humanoid found; try rejoining if respawn fails.", 4)
+            end
         end
-        if CONFIG.AntiTaser.ClearSit and hum then
-            pcall(function() hum.Sit = false end)
+    })
+
+    tab:AddSection({ Name = "Protections" })
+
+    tab:AddToggle({
+        Name = "Anti FallDamage (Air Cushion)",
+        Default = SETTINGS.FALL.ENABLED_DEFAULT,
+        Callback = function(on)
+            if on then startAntiFall() else stopAntiFall() end
         end
-        if CONFIG.AntiTaser.ClearPlatform and hum then
-            pcall(function() hum.PlatformStand = false end)
+    })
+
+    tab:AddToggle({
+        Name = "Anti Arrest (Police proximity blink)",
+        Default = SETTINGS.ARREST.ENABLED_DEFAULT,
+        Callback = function(on)
+            if on then startAntiArrest() else stopAntiArrest() end
         end
-        if CONFIG.AntiTaser.ForceGettingUp and hum then
-            pcall(function()
-                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-            end)
+    })
+
+    tab:AddToggle({
+        Name = "Anti Taser (cancel ragdoll/ko)",
+        Default = SETTINGS.TASER.ENABLED_DEFAULT,
+        Callback = function(on)
+            if on then startAntiTaser() else stopAntiTaser() end
         end
+    })
+
+    ------------------------------------------------------------
+    -- Cleanup on character respawn (auto re-arm toggles)
+    ------------------------------------------------------------
+    local function rearmActive()
+        -- Diese Toggles sind nur zur Laufzeit; falls du persistieren willst,
+        -- kannst du Flags speichern. Hier: falls Toggle aktiv, erneut starten.
+        -- (Orion speichert Default nicht automatisch → bewusst einfach gehalten)
     end
 
-    local function AntiTaserTick(dt)
-        if not antiTaserEnabled then return end
-        local ch, hum, hrp = getCharHumHRP(LP)
-        if not (ch and hum and hrp) then return end
-
-        -- debounce
-        if now() - lastTaserClearAt < CONFIG.AntiTaser.CooldownSeconds then return end
-
-        local st = hum:GetState()
-        if badStates[st] or hum.PlatformStand then
-            lastTaserClearAt = now()
-            clearRagdollBits(ch, hum)
-            -- leicht “stabilisieren”
-            pcall(function()
-                hrp.RotVelocity = Vector3.new()
-                if math.abs(hrp.Velocity.Y) > 50 then
-                    hrp.Velocity = Vector3.new(hrp.Velocity.X, 0, hrp.Velocity.Z)
-                end
-            end)
-        end
-    end
-
-    ----------------------------------------------------------------
-    -- Heartbeat loop (server-freundlich; keine hohen Prioritäten)
-    ----------------------------------------------------------------
-    RunService.Heartbeat:Connect(function(dt)
-        -- Reihenfolge: erst Taser, dann Arrest, dann Fall – ist egal, aber so logisch.
-        AntiTaserTick(dt)
-        AntiArrestTick(dt)
-        AntiFallTick(dt)
+    LP.CharacterRemoving:Connect(function()
+        stopAntiFall()
+        stopAntiArrest()
+        stopAntiTaser()
     end)
 
-    ----------------------------------------------------------------
-    -- UI (nur Toggles, speichert über Orion Flags automatisch)
-    ----------------------------------------------------------------
-    tab:AddToggle({
-        Name = "Anti Fall Damage",
-        Default = false,
-        Save = true,
-        Flag = "misc_antifall",
-        Callback = function(v)
-            antiFallEnabled = v
-            OrionLib:MakeNotification({
-                Name = "Misc",
-                Content = "Anti Fall Damage: " .. (v and "ON" or "OFF"),
-                Time = 3
-            })
-        end
-    })
-
-    tab:AddToggle({
-        Name = "Anti Arrest",
-        Default = false,
-        Save = true,
-        Flag = "misc_antiarrest",
-        Callback = function(v)
-            antiArrestEnabled = v
-            OrionLib:MakeNotification({
-                Name = "Misc",
-                Content = "Anti Arrest: " .. (v and "ON" or "OFF"),
-                Time = 3
-            })
-        end
-    })
-
-    tab:AddToggle({
-        Name = "Anti Taser",
-        Default = false,
-        Save = true,
-        Flag = "misc_antitaser",
-        Callback = function(v)
-            antiTaserEnabled = v
-            OrionLib:MakeNotification({
-                Name = "Misc",
-                Content = "Anti Taser: " .. (v and "ON" or "OFF"),
-                Time = 3
-            })
-        end
-    })
-
-
-    
-
-    tab:AddParagraph("Notes", [[
-• Anti FallDamage: federt kurz vor dem Boden mit kleinen CFrame-Schritten; optional killt es Y-Velocity.
-• Anti Arrest: warpt dich in kleinen, kollisionsgeprüften Steps weg, wenn Police in Reichweite und du nicht sitzt.
-• Anti Taser: bricht Ragdoll/PlatformStand schnell ab (GettingUp, PlatformStand=false, Sit=false).
-]])
+    LP.CharacterAdded:Connect(function()
+        -- kurze Verzögerung bis Humanoid/HRP sicher existieren
+        task.wait(0.25)
+        rearmActive()
+    end)
 end
