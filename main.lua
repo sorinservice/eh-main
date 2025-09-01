@@ -186,19 +186,42 @@ local TABS = {
 
 -- Loader-Helfer
 local function safeRequire(url)
-    local ok, loaderOrErr = pcall(function()
-        local src = game:HttpGet(url)
-        return loadstring(src)
+    -- 1) Cache buster, damit du nicht an Raw-GitHub-Caches hängst
+    local sep = string.find(url, "?", 1, true) and "&" or "?"
+    local finalUrl = url .. sep .. "cb=" .. os.time() .. tostring(math.random(1000,9999))
+
+    -- 2) Laden (mit Fehlertext)
+    local okFetch, body = pcall(function()
+        return game:HttpGet(finalUrl) -- wirft bei 404/403/timeout
     end)
-    if not ok or type(loaderOrErr) ~= "function" then
-        return nil, "Konnte Modul nicht laden: " .. tostring(url)
+    if not okFetch then
+        return nil, ("HTTP error on %s\n%s"):format(finalUrl, tostring(body))
     end
-    local ok2, modOrErr = pcall(loaderOrErr)
-    if not ok2 then
-        return nil, "Fehler beim Ausführen: " .. tostring(modOrErr)
+
+    -- 3) BOM/Zero-Width rauswerfen (manchmal sneakt U+FEFF rein)
+    --    und CRLF normalisieren (optional, aber gut)
+    body = body:gsub("^\239\187\191", "")           -- UTF-8 BOM am Anfang
+                :gsub("\226\128\139", "")           -- ZERO WIDTH NO-BREAK SPACE (U+FEFF in UTF-8 mitten drin)
+                :gsub("\r\n", "\n")
+
+    -- 4) Kompilieren (mit Vorschau im Fehlerfall)
+    local okCompile, chunkOrErr = pcall(loadstring, body)
+    if not okCompile or type(chunkOrErr) ~= "function" then
+        local preview = body:sub(1, 220)
+        return nil, ("loadstring failed for %s\n%s\n\nPreview:\n%s"):format(finalUrl, tostring(chunkOrErr), preview)
+    end
+
+    -- 5) Ausführen – das Modul MUSS eine Funktion zurückgeben: return function(tab, OrionLib) ... end
+    local okRun, modOrErr = pcall(chunkOrErr)
+    if not okRun then
+        return nil, ("module execution error for %s\n%s"):format(finalUrl, tostring(modOrErr))
+    end
+    if type(modOrErr) ~= "function" then
+        return nil, ("module did not return a function: %s"):format(finalUrl)
     end
     return modOrErr, nil
 end
+
 
 -- WICHTIG: iconKey wird jetzt angenommen und an MakeTab übergeben
 local function attachTab(name, url, iconKey)
