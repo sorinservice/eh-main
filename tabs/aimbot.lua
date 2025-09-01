@@ -401,6 +401,32 @@ return function(tab, OrionLib)
     local secFilt   = tab:AddSection({ Name = "Filter / Distance" })
     local secMob    = tab:AddSection({ Name = "Mobile Panel" })
 
+    -- Keybind zum Aimbot toggeln
+secMain:AddBind({
+    Name = "Aimbot Keybind",
+    Default = Enum.KeyCode.Q,
+    Hold = false,
+    Callback = function()
+        CFG.Enabled = not CFG.Enabled
+        if CFG.Enabled then
+            start_aim_loop()
+            OrionLib:MakeNotification({
+                Name = "Aimbot",
+                Content = "Aimbot aktiviert (Keybind)",
+                Time = 3
+            })
+        else
+            stop_aim_loop()
+            OrionLib:MakeNotification({
+                Name = "Aimbot",
+                Content = "Aimbot deaktiviert (Keybind)",
+                Time = 3
+            })
+        end
+        save_cfg()
+    end
+})
+
     -- Haupt-Toggle
     secMain:AddToggle({
         Name = "Enable Aimbot",
