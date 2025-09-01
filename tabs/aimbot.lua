@@ -1,18 +1,18 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
-    -- Aimbot Variablen
-    local aimbot = {
-        enabled = false,
-        mobileEnabled = false,
-        keybind = Enum.KeyCode.Q,
-        hitPrediction = true,
-        aimPart = "Head",
-        ignoreTeam = true,
-        fovColor = Color3.fromRGB(255, 0, 0),
-        maxDistance = 500,
-        smoothness = 0.5,
-        fovVisible = true,
-        fovRadius = 80
+    -- Aimbot Einstellungen
+    local aimbotSettings = {
+        Enabled = false,
+        MobileEnabled = false,
+        Keybind = Enum.KeyCode.Q,
+        Prediction = true,
+        AimPart = "Head",
+        IgnoreTeam = true,
+        FOVColor = Color3.fromRGB(255, 0, 0),
+        MaxDistance = 500,
+        Smoothness = 0.5,
+        FOVVisible = true,
+        FOVRadius = 80
     }
     
     -- Services
@@ -21,27 +21,44 @@ return function(tab, OrionLib)
     local UserInputService = game:GetService("UserInputService")
     local LocalPlayer = Players.LocalPlayer
     
+    -- FOV Circle
+    local FOVCircle = Drawing.new("Circle")
+    FOVCircle.Visible = aimbotSettings.FOVVisible
+    FOVCircle.Radius = aimbotSettings.FOVRadius
+    FOVCircle.Color = aimbotSettings.FOVColor
+    FOVCircle.Thickness = 2
+    FOVCircle.Filled = false
+    
     -- Hilfsfunktionen
-    local function getClosestPlayer()
+    local function UpdateFOV()
+        FOVCircle.Visible = aimbotSettings.FOVVisible
+        FOVCircle.Color = aimbotSettings.FOVColor
+        FOVCircle.Radius = aimbotSettings.FOVRadius
+        FOVCircle.Position = Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
+    end
+    
+    local function GetClosestPlayer()
         local closestPlayer = nil
-        local closestDistance = aimbot.maxDistance
+        local closestDistance = aimbotSettings.MaxDistance
         
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
-                -- Team-Check
-                if aimbot.ignoreTeam and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+                -- Team Check
+                if aimbotSettings.IgnoreTeam and player.Team and LocalPlayer.Team and player.Team == LocalPlayer.Team then
                     continue
                 end
                 
                 local character = player.Character
-                local aimPart = character:FindFirstChild(aimbot.aimPart)
+                local aimPart = character:FindFirstChild(aimbotSettings.AimPart)
                 if not aimPart then
                     aimPart = character:FindFirstChild("HumanoidRootPart")
                 end
                 
                 if aimPart then
+                    local screenPoint, visible = workspace.CurrentCamera:WorldToViewportPoint(aimPart.Position)
                     local distance = (LocalPlayer.Character.Head.Position - aimPart.Position).Magnitude
-                    if distance <= closestDistance then
+                    
+                    if visible and distance <= closestDistance then
                         closestPlayer = player
                         closestDistance = distance
                     end
@@ -52,29 +69,29 @@ return function(tab, OrionLib)
         return closestPlayer
     end
     
-    local function predictPosition(targetPart)
-        if not aimbot.hitPrediction then
+    local function PredictPosition(targetPart)
+        if not aimbotSettings.Prediction then
             return targetPart.Position
         end
         
-        -- Einfache Vorhersage basierend auf Geschwindigkeit
+        -- Einfache Vorhersage
         local targetVelocity = targetPart.Velocity
         local distance = (targetPart.Position - LocalPlayer.Character.Head.Position).Magnitude
-        local travelTime = distance / 1000 -- Vereinfachte Annahme
+        local travelTime = distance / 1000
         
         return targetPart.Position + (targetVelocity * travelTime)
     end
     
-    local function aimAt(target)
+    local function AimAt(target)
         if not target or not target.Character then return end
         
-        local targetPart = target.Character:FindFirstChild(aimbot.aimPart)
+        local targetPart = target.Character:FindFirstChild(aimbotSettings.AimPart)
         if not targetPart then
             targetPart = target.Character:FindFirstChild("HumanoidRootPart")
             if not targetPart then return end
         end
         
-        local predictedPosition = predictPosition(targetPart)
+        local predictedPosition = PredictPosition(targetPart)
         local camera = workspace.CurrentCamera
         
         if camera and camera.CFrame then
@@ -82,74 +99,62 @@ return function(tab, OrionLib)
             local targetLook = (predictedPosition - camera.CFrame.Position).Unit
             
             -- Smoothing anwenden
-            local smoothedLook = currentLook:Lerp(targetLook, 1 - aimbot.smoothness)
+            local smoothedLook = currentLook:Lerp(targetLook, 1 - aimbotSettings.Smoothness)
             camera.CFrame = CFrame.new(camera.CFrame.Position, camera.CFrame.Position + smoothedLook)
         end
     end
     
-    -- FOV Circle Zeichnen
-    local fovCircle = Drawing.new("Circle")
-    fovCircle.Visible = aimbot.fovVisible
-    fovCircle.Radius = aimbot.fovRadius
-    fovCircle.Color = aimbot.fovColor
-    fovCircle.Thickness = 2
-    fovCircle.Filled = false
-    fovCircle.Position = Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
-    
-    local function updateFOV()
-        fovCircle.Visible = aimbot.fovVisible
-        fovCircle.Color = aimbot.fovColor
-        fovCircle.Radius = aimbot.fovRadius
-        fovCircle.Position = Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
-    end
-    
-    -- Haupt-Aimbot Loop
-    local aimbotConnection
-    local function startAimbot()
-        if aimbotConnection then
-            aimbotConnection:Disconnect()
+    -- Aimbot Loop
+    local AimbotConnection
+    local function ToggleAimbot()
+        if AimbotConnection then
+            AimbotConnection:Disconnect()
+            AimbotConnection = nil
         end
         
-        aimbotConnection = RunService.RenderStepped:Connect(function()
-            updateFOV()
-            
-            if aimbot.enabled then
-                local closestPlayer = getClosestPlayer()
-                if closestPlayer then
-                    aimAt(closestPlayer)
+        if aimbotSettings.Enabled then
+            AimbotConnection = RunService.RenderStepped:Connect(function()
+                UpdateFOV()
+                
+                if aimbotSettings.Enabled then
+                    local closestPlayer = GetClosestPlayer()
+                    if closestPlayer then
+                        AimAt(closestPlayer)
+                    end
                 end
-            end
-        end)
+            end)
+        end
     end
     
     -- Keybind Handler
-    local keybindConnection
-    local function setupKeybind()
-        if keybindConnection then
-            keybindConnection:Disconnect()
+    local KeybindConnection
+    local function SetupKeybind()
+        if KeybindConnection then
+            KeybindConnection:Disconnect()
         end
         
-        keybindConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        KeybindConnection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if gameProcessed then return end
             
-            if input.KeyCode == aimbot.keybind then
-                aimbot.enabled = not aimbot.enabled
+            if input.KeyCode == aimbotSettings.Keybind then
+                aimbotSettings.Enabled = not aimbotSettings.Enabled
+                ToggleAimbot()
                 
                 OrionLib:MakeNotification({
                     Name = "Aimbot",
-                    Content = "Aimbot " .. (aimbot.enabled and "aktiviert" or "deaktiviert"),
+                    Content = "Aimbot " .. (aimbotSettings.Enabled and "aktiviert" or "deaktiviert"),
                     Time = 3
                 })
             end
         end)
     end
     
-    -- UI Elemente
+    -- UI Elements
     tab:AddToggle({
         Name = "Mobile Aimbot",
-        Default = false,
+        Default = aimbotSettings.MobileEnabled,
         Callback = function(value)
-            aimbot.mobileEnabled = value
+            aimbotSettings.MobileEnabled = value
             OrionLib:MakeNotification({
                 Name = "Aimbot",
                 Content = "Mobile Aimbot " .. (value and "aktiviert" or "deaktiviert"),
@@ -160,9 +165,10 @@ return function(tab, OrionLib)
     
     tab:AddToggle({
         Name = "Aimbot aktivieren",
-        Default = false,
+        Default = aimbotSettings.Enabled,
         Callback = function(value)
-            aimbot.enabled = value
+            aimbotSettings.Enabled = value
+            ToggleAimbot()
             OrionLib:MakeNotification({
                 Name = "Aimbot",
                 Content = "Aimbot " .. (value and "aktiviert" or "deaktiviert"),
@@ -173,43 +179,43 @@ return function(tab, OrionLib)
     
     tab:AddKeybind({
         Name = "Aimbot Keybind",
-        Default = aimbot.keybind,
+        Default = aimbotSettings.Keybind,
         Callback = function(key)
-            aimbot.keybind = key
-            setupKeybind()
+            aimbotSettings.Keybind = key
+            SetupKeybind()
         end
     })
     
     tab:AddToggle({
         Name = "Hit Prediction",
-        Default = aimbot.hitPrediction,
+        Default = aimbotSettings.Prediction,
         Callback = function(value)
-            aimbot.hitPrediction = value
+            aimbotSettings.Prediction = value
         end
     })
     
     tab:AddDropdown({
         Name = "Aim Part",
-        Default = aimbot.aimPart,
+        Default = aimbotSettings.AimPart,
         Options = {"Head", "HumanoidRootPart", "UpperTorso"},
         Callback = function(value)
-            aimbot.aimPart = value
+            aimbotSettings.AimPart = value
         end
     })
     
     tab:AddToggle({
         Name = "Ignore Team",
-        Default = aimbot.ignoreTeam,
+        Default = aimbotSettings.IgnoreTeam,
         Callback = function(value)
-            aimbot.ignoreTeam = value
+            aimbotSettings.IgnoreTeam = value
         end
     })
     
     tab:AddColorpicker({
         Name = "FOV Color",
-        Default = aimbot.fovColor,
+        Default = aimbotSettings.FOVColor,
         Callback = function(value)
-            aimbot.fovColor = value
+            aimbotSettings.FOVColor = value
         end
     })
     
@@ -217,11 +223,11 @@ return function(tab, OrionLib)
         Name = "Max Distance",
         Min = 10,
         Max = 1000,
-        Default = aimbot.maxDistance,
+        Default = aimbotSettings.MaxDistance,
         Color = Color3.fromRGB(255, 0, 0),
         Increment = 10,
         Callback = function(value)
-            aimbot.maxDistance = value
+            aimbotSettings.MaxDistance = value
         end
     })
     
@@ -229,11 +235,11 @@ return function(tab, OrionLib)
         Name = "Smoothness",
         Min = 0.1,
         Max = 1,
-        Default = aimbot.smoothness,
+        Default = aimbotSettings.Smoothness,
         Color = Color3.fromRGB(0, 255, 0),
         Increment = 0.05,
         Callback = function(value)
-            aimbot.smoothness = value
+            aimbotSettings.Smoothness = value
         end
     })
     
@@ -241,36 +247,36 @@ return function(tab, OrionLib)
         Name = "FOV Radius",
         Min = 10,
         Max = 200,
-        Default = aimbot.fovRadius,
+        Default = aimbotSettings.FOVRadius,
         Color = Color3.fromRGB(0, 0, 255),
         Increment = 5,
         Callback = function(value)
-            aimbot.fovRadius = value
+            aimbotSettings.FOVRadius = value
         end
     })
     
     tab:AddToggle({
         Name = "FOV Sichtbar",
-        Default = aimbot.fovVisible,
+        Default = aimbotSettings.FOVVisible,
         Callback = function(value)
-            aimbot.fovVisible = value
+            aimbotSettings.FOVVisible = value
         end
     })
     
-    -- Initialisiere den Aimbot
-    startAimbot()
-    setupKeybind()
+    -- Initialisierung
+    SetupKeybind()
+    UpdateFOV()
     
-    -- Cleanup wenn der Tab geschlossen wird
+    -- Cleanup
     tab:OnClose(function()
-        if aimbotConnection then
-            aimbotConnection:Disconnect()
+        if AimbotConnection then
+            AimbotConnection:Disconnect()
         end
-        if keybindConnection then
-            keybindConnection:Disconnect()
+        if KeybindConnection then
+            KeybindConnection:Disconnect()
         end
-        if fovCircle then
-            fovCircle:Remove()
+        if FOVCircle then
+            FOVCircle:Remove()
         end
     end)
 end
