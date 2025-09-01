@@ -1,174 +1,119 @@
 -- tabs/misc.lua
--- Misc utilities for SorinHub (executor-friendly, client-side)
--- Features:
--- 1) Anti Fall Damage (soft-landing right before ground)
--- 2) Anti Arrest (auto step/teleport away from nearby Police when not in vehicle)
--- 3) Anti Taser (auto recover from ragdoll/PlatformStand/FallingDown)
+-- Misc features for SorinHub
 
 return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- Services
     ----------------------------------------------------------------
-    local Players        = game:GetService("Players")
-    local RunService     = game:GetService("RunService")
-    local UserInput      = game:GetService("UserInputService")
-    local Workspace      = game:GetService("Workspace")
-    local TweenService   = game:GetService("TweenService")
-
-    local LP             = Players.LocalPlayer
-    local Camera         = Workspace.CurrentCamera
+    local Players     = game:GetService("Players")
+    local RunService  = game:GetService("RunService")
+    local Workspace   = game:GetService("Workspace")
+    local LP          = Players.LocalPlayer
 
     ----------------------------------------------------------------
-    -- Small helpers
-    ----------------------------------------------------------------
-    local function notify(title, text, t)
-        OrionLib:MakeNotification({ Name = title or "Misc", Content = text or "", Time = t or 3 })
-    end
-
-    local function getHumanoid(char)
-        return char and char:FindFirstChildOfClass("Humanoid") or nil
-    end
-
-    local function getHRP(char)
-        return char and char:FindFirstChild("HumanoidRootPart") or nil
-    end
-
-    local function isInVehicle(hum)
-        if not hum then return false end
-        local seat = hum.SeatPart
-        return seat ~= nil and seat:IsA("VehicleSeat")
-    end
-
-    local function unitOrZero(v)
-        if v.Magnitude > 0 then return v.Unit else return Vector3.new() end
-    end
-
-    -- Safe BodyVelocity pulse (exec-friendly, minimal lifetime)
-    local function pulseBodyVelocity(hrp, vel, lifetime)
-        if not (hrp and hrp:IsDescendantOf(Workspace)) then return end
-        local bv = Instance.new("BodyVelocity")
-        bv.MaxForce = Vector3.new(1e5,1e5,1e5)
-        bv.Velocity = vel
-        bv.P = 1250
-        bv.Parent = hrp
-        task.delay(lifetime or 0.12, function()
-            if bv then pcall(function() bv:Destroy() end) end
-        end)
-    end
-
-    -- Raycast down from point, returns hitPos, hitNormal, hitInstance, dist
-    local function rayDown(origin, maxDist, ignoreList)
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = ignoreList or {}
-        params.IgnoreWater = false
-        local res = Workspace:Raycast(origin, Vector3.new(0, -maxDist, 0), params)
-        if res then
-            return res.Position, res.Normal, res.Instance, (origin - res.Position).Magnitude
-        end
-        return nil, nil, nil, math.huge
-    end
-
-    -- Step to safe position on ground near a given point (simple downcast)
-    local function snapToGroundNear(pos, maxDrop, ignoreList)
-        local hitPos = select(1, rayDown(pos + Vector3.new(0, 2, 0), maxDrop or 50, ignoreList))
-        return hitPos and (hitPos + Vector3.new(0, 2.5, 0)) or pos
-    end
-
-    ----------------------------------------------------------------
-    -- STATE & UI
+    -- State
     ----------------------------------------------------------------
     local state = {
+        -- Anti Fall
         antiFallEnabled   = false,
+        fall_probeDist    = 12,   -- ab dieser Bodennähe eingreifen (Studs)
+        fall_maxStep      = 2.5,  -- maximale Abwärtsbewegung je Frame
+        fall_safeOffset   = 2.5,  -- über Boden "auflanden"
+
+        -- Anti Arrest
         antiArrestEnabled = false,
+        arrest_radius     = 12,   -- Distanz Polizist -> Spieler
+        arrest_teleport   = 15,   -- Teleport-Offset (Studs)
+
+        -- Anti Taser
         antiTaserEnabled  = false,
-
-        -- Anti-FallDamage
-        fall_minSpeed     = 45,   -- |Y-velocity| threshold to intervene
-        fall_probeDist    = 10,   -- start braking when ground < this (studs)
-        fall_brakeFactor  = 0.55, -- multiplier applied to downward speed (lower = more braking)
-        fall_pulseTime    = 0.12, -- seconds for BodyVelocity pulse
-
-        -- Anti-Arrest
-        arrest_radius     = 10,   -- proximity radius to trigger (studs)
-        arrest_teleDist   = 16,   -- how far to teleport away
-        arrest_cooldown   = 1.0,  -- seconds
-
-        -- Anti-Taser
-        taser_cooldown    = 0.75, -- seconds between recoveries
-        taser_upwardKick  = 15,   -- small vertical kick to help recovery
     }
 
-    local lastArrestTime = 0
-    local lastTaserRecover= 0
+    ----------------------------------------------------------------
+    -- Helpers
+    ----------------------------------------------------------------
+    local function getHumanoid(char)
+        return char and char:FindFirstChildOfClass("Humanoid")
+    end
+    local function getHRP(char)
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
 
-    -- UI sections
-    local secFall   = tab:AddSection({ Name = "Anti Fall Damage" })
-    local secArrest = tab:AddSection({ Name = "Anti Arrest (Police proximity)" })
-    local secTaser  = tab:AddSection({ Name = "Anti Taser (ragdoll recovery)" })
+    local function rayDown(origin, dist, ignore)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = ignore or {}
+        local result = Workspace:Raycast(origin, Vector3.new(0, -dist, 0), params)
+        if result then
+            return result.Position, result.Instance, result.Normal, (origin.Y - result.Position.Y)
+        end
+        return nil
+    end
 
-    -- Anti FallDamage
+    ----------------------------------------------------------------
+    -- Respawn Button
+    ----------------------------------------------------------------
+    tab:AddButton({
+        Name = "Respawn (lose all weapons/tools)",
+        Callback = function()
+            local function nukeTools(container)
+                if not container then return end
+                for _, inst in ipairs(container:GetChildren()) do
+                    if inst:IsA("Tool") then
+                        pcall(function() inst:Destroy() end)
+                    end
+                end
+            end
+            nukeTools(LP:FindFirstChild("Backpack"))
+            nukeTools(LP.Character)
+
+            local hum = getHumanoid(LP.Character)
+            if hum then
+                hum.Health = 0
+                OrionLib:MakeNotification({
+                    Name = "Utility",
+                    Content = "Respawn requested (inventory cleared).",
+                    Time = 3
+                })
+            else
+                OrionLib:MakeNotification({
+                    Name = "Utility",
+                    Content = "No humanoid found; try rejoining if respawn fails.",
+                    Time = 4
+                })
+            end
+        end
+    })
+    tab:AddParagraph("Note", "This forces a respawn and deletes all Tools from your Backpack.")
+
+    ----------------------------------------------------------------
+    -- Anti-FallDamage (CFrame Ladder)
+    ----------------------------------------------------------------
+    local secFall = tab:AddSection({ Name = "Anti Fall Damage" })
     secFall:AddToggle({
-        Name = "Enable Anti Fall Damage",
+        Name = "Enable Anti-FallDamage",
         Default = false,
         Callback = function(v) state.antiFallEnabled = v end
     })
     secFall:AddSlider({
         Name = "Trigger Distance (to ground)",
-        Min = 5, Max = 30, Increment = 1, Default = state.fall_probeDist,
+        Min = 6, Max = 30, Increment = 1, Default = state.fall_probeDist,
         ValueName = "studs",
         Callback = function(v) state.fall_probeDist = math.floor(v) end
     })
     secFall:AddSlider({
-        Name = "Min Down Speed",
-        Min = 20, Max = 120, Increment = 5, Default = state.fall_minSpeed,
-        ValueName = "|Vy|",
-        Callback = function(v) state.fall_minSpeed = math.floor(v) end
+        Name = "Max Drop/Frame",
+        Min = 1.0, Max = 5.0, Increment = 0.25, Default = state.fall_maxStep,
+        ValueName = "studs",
+        Callback = function(v) state.fall_maxStep = tonumber(string.format("%.2f", v)) end
     })
     secFall:AddSlider({
-        Name = "Brake Factor",
-        Min = 0.25, Max = 0.9, Increment = 0.05, Default = state.fall_brakeFactor,
-        ValueName = "×speed",
-        Callback = function(v) state.fall_brakeFactor = tonumber(string.format("%.2f", v)) end
-    })
-
-    -- Anti Arrest
-    secArrest:AddToggle({
-        Name = "Enable Anti Arrest",
-        Default = false,
-        Callback = function(v) state.antiArrestEnabled = v end
-    })
-    secArrest:AddSlider({
-        Name = "Police Trigger Radius",
-        Min = 6, Max = 25, Increment = 1, Default = state.arrest_radius,
+        Name = "Safe Offset above ground",
+        Min = 1.5, Max = 4.0, Increment = 0.25, Default = state.fall_safeOffset,
         ValueName = "studs",
-        Callback = function(v) state.arrest_radius = math.floor(v) end
-    })
-    secArrest:AddSlider({
-        Name = "Teleport Distance",
-        Min = 10, Max = 40, Increment = 1, Default = state.arrest_teleDist,
-        ValueName = "studs",
-        Callback = function(v) state.arrest_teleDist = math.floor(v) end
+        Callback = function(v) state.fall_safeOffset = tonumber(string.format("%.2f", v)) end
     })
 
-    -- Anti Taser
-    secTaser:AddToggle({
-        Name = "Enable Anti Taser",
-        Default = false,
-        Callback = function(v) state.antiTaserEnabled = v end
-    })
-    secTaser:AddSlider({
-        Name = "Recovery Cooldown",
-        Min = 0.25, Max = 2.0, Increment = 0.05, Default = state.taser_cooldown,
-        ValueName = "sec",
-        Callback = function(v) state.taser_cooldown = tonumber(string.format("%.2f", v)) end
-    })
-
-    tab:AddParagraph("Note", "All features are client-side. Tune thresholds for your game. If your server has its own stun/arrest logic, consider adding server-authoritative checks later.")
-
-    ----------------------------------------------------------------
-    -- Anti Fall Damage loop
-    ----------------------------------------------------------------
     local function fallTick(dt)
         if not state.antiFallEnabled then return end
         local char = LP.Character
@@ -176,147 +121,109 @@ return function(tab, OrionLib)
         local hrp  = getHRP(char)
         if not (hum and hrp) then return end
 
-        -- Only act during freefall-like states
         local st = hum:GetState()
         if st ~= Enum.HumanoidStateType.Freefall and st ~= Enum.HumanoidStateType.FallingDown then
             return
         end
 
-        -- Downward speed check
-        local vy = hrp.Velocity.Y
-        if vy >= -state.fall_minSpeed then return end
+        local hitPos, _, _, dist = rayDown(hrp.Position, math.max(6, state.fall_probeDist + 8), {char})
+        if not hitPos then return end
 
-        -- Ground distance
-        local hitPos, _, _, dist = rayDown(hrp.Position, math.max(6, state.fall_probeDist), {char})
-        if dist <= state.fall_probeDist then
-            -- Apply braking just before impact
-            local v = hrp.Velocity
-            local damped = Vector3.new(v.X * 0.7, v.Y * state.fall_brakeFactor, v.Z * 0.7)
-            pulseBodyVelocity(hrp, damped, state.fall_pulseTime)
+        local gap = (hrp.Position.Y - hitPos.Y)
+        if gap <= state.fall_probeDist then
+            local targetY = hitPos.Y + state.fall_safeOffset
+            if hrp.Position.Y - targetY > 0 then
+                local step = math.min(state.fall_maxStep, hrp.Position.Y - targetY)
+                local pos = hrp.Position
+                hrp.CFrame = CFrame.new(pos.X, pos.Y - step, pos.Z, hrp.CFrame:components())
+                if (hrp.Position.Y - targetY) <= 0.6 then
+                    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Landed) end)
+                end
+            end
         end
     end
 
     ----------------------------------------------------------------
-    -- Anti Arrest loop
+    -- Anti-Arrest
     ----------------------------------------------------------------
-    local function isPolice(plr)
-        return plr.Team and plr.Team.Name == "Police"
-    end
+    local secArrest = tab:AddSection({ Name = "Anti Arrest" })
+    secArrest:AddToggle({
+        Name = "Enable Anti-Arrest",
+        Default = false,
+        Callback = function(v) state.antiArrestEnabled = v end
+    })
+    secArrest:AddSlider({
+        Name = "Detect Radius",
+        Min = 6, Max = 25, Increment = 1, Default = state.arrest_radius,
+        ValueName = "studs",
+        Callback = function(v) state.arrest_radius = math.floor(v) end
+    })
+    secArrest:AddSlider({
+        Name = "Teleport Offset",
+        Min = 10, Max = 30, Increment = 1, Default = state.arrest_teleport,
+        ValueName = "studs",
+        Callback = function(v) state.arrest_teleport = math.floor(v) end
+    })
 
     local function arrestTick(dt)
         if not state.antiArrestEnabled then return end
         local char = LP.Character
-        local hum  = getHumanoid(char)
         local hrp  = getHRP(char)
-        if not (hum and hrp) then return end
-        if isInVehicle(hum) then return end  -- do nothing in cars
+        if not hrp then return end
 
-        local now = os.clock()
-        if (now - lastArrestTime) < state.arrest_cooldown then return end
-
-        -- find nearest Police within radius
-        local nearest, nDist, nHRP = nil, math.huge, nil
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LP and isPolice(plr) then
-                local c = plr.Character
-                local pHRP = getHRP(c)
-                local pHum = getHumanoid(c)
-                if pHRP and pHum and pHum.Health > 0 then
-                    local d = (pHRP.Position - hrp.Position).Magnitude
-                    if d < nDist then
-                        nDist = d
-                        nHRP = pHRP
-                        nearest = plr
+        for _,plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LP and plr.Team and plr.Team.Name == "Police" then
+                local phrp = getHRP(plr.Character)
+                if phrp then
+                    local dist = (phrp.Position - hrp.Position).Magnitude
+                    if dist <= state.arrest_radius then
+                        local offset = Vector3.new(
+                            (math.random() > 0.5 and 1 or -1) * state.arrest_teleport,
+                            0,
+                            (math.random() > 0.5 and 1 or -1) * state.arrest_teleport
+                        )
+                        hrp.CFrame = hrp.CFrame + offset
+                        OrionLib:MakeNotification({
+                            Name = "Anti-Arrest",
+                            Content = "Teleported away from nearby Police.",
+                            Time = 2
+                        })
+                        break
                     end
                 end
             end
         end
-        if nearest and nDist <= state.arrest_radius then
-            -- Tele away opposite of police direction, clamp to ground
-            local awayDir = unitOrZero(hrp.Position - nHRP.Position)
-            if awayDir.Magnitude < 0.1 then
-                awayDir = unitOrZero(Camera.CFrame.LookVector) * -1 -- fallback
+    end
+
+    ----------------------------------------------------------------
+    -- Anti-Taser
+    ----------------------------------------------------------------
+    local secTaser = tab:AddSection({ Name = "Anti Taser" })
+    secTaser:AddToggle({
+        Name = "Enable Anti-Taser",
+        Default = false,
+        Callback = function(v) state.antiTaserEnabled = v end
+    })
+
+    local function taserTick(dt)
+        if not state.antiTaserEnabled then return end
+        local hum = getHumanoid(LP.Character)
+        if hum then
+            if hum.PlatformStand then
+                hum.PlatformStand = false
             end
-            local target = hrp.Position + awayDir * state.arrest_teleDist
-            target = snapToGroundNear(target, 60, {char})
-            -- gentle teleport
-            hrp.CFrame = CFrame.new(target, target + Camera.CFrame.LookVector)
-            lastArrestTime = now
-            -- small horizontal impulse to break grapples
-            pulseBodyVelocity(hrp, awayDir * 28 + Vector3.new(0, 6, 0), 0.10)
-            notify("Anti Arrest", "Teleported away from Police proximity.", 2)
+            if hum.Sit then
+                hum.Sit = false
+            end
         end
     end
 
     ----------------------------------------------------------------
-    -- Anti Taser: state watcher + recovery
+    -- Heartbeat Loop
     ----------------------------------------------------------------
-    local function tryRecover(hum, hrp)
-        if not (state.antiTaserEnabled and hum and hrp) then return end
-        local now = os.clock()
-        if (now - lastTaserRecover) < state.taser_cooldown then return end
-
-        -- Clear common stun/KO patterns
-        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        hum.PlatformStand = false
-        hum.Sit = false
-
-        -- Give a tiny upward kick & stabilize horizontal speed
-        local v = hrp.Velocity
-        local fixed = Vector3.new(v.X * 0.5, math.max(v.Y, state.taser_upwardKick), v.Z * 0.5)
-        pulseBodyVelocity(hrp, fixed, 0.10)
-
-        lastTaserRecover = now
-        -- (optional) notify once in a while
-        -- notify("Anti Taser", "Recovered from stun.", 1.5)
-    end
-
-    local stateConn
-    local function bindTaserWatcher()
-        if stateConn then stateConn:Disconnect() end
-        local hum = getHumanoid(LP.Character)
-        if not hum then return end
-        stateConn = hum.StateChanged:Connect(function(old,new)
-            if not state.antiTaserEnabled then return end
-            if new == Enum.HumanoidStateType.FallingDown
-            or new == Enum.HumanoidStateType.Ragdoll
-            or new == Enum.HumanoidStateType.PlatformStanding
-            or new == Enum.HumanoidStateType.Physics then
-                tryRecover(hum, getHRP(LP.Character))
-            end
-        end)
-    end
-
-    -- Rebind watcher on character spawn
-    local function onCharacterAdded(char)
-        task.wait(0.1)
-        bindTaserWatcher()
-    end
-    if LP.Character then onCharacterAdded(LP.Character) end
-    LP.CharacterAdded:Connect(onCharacterAdded)
-
-    ----------------------------------------------------------------
-    -- Main heartbeat
-    ----------------------------------------------------------------
-    local hbConn = RunService.Heartbeat:Connect(function(dt)
-        -- Light-weight ticks
+    RunService.Heartbeat:Connect(function(dt)
         fallTick(dt)
         arrestTick(dt)
-        -- AntiTaser is event-driven (StateChanged), plus:
-        if state.antiTaserEnabled then
-            local hum = getHumanoid(LP.Character)
-            local hrp = getHRP(LP.Character)
-            if hum and hrp then
-                -- in case game sets PlatformStand without state change
-                if hum.PlatformStand or hum.Sit then
-                    tryRecover(hum, hrp)
-                end
-            end
-        end
+        taserTick(dt)
     end)
-
-    ----------------------------------------------------------------
-    -- Cleanup on tab close (if your Orion exposes it later, hook here)
-    ----------------------------------------------------------------
-    -- (no OnClose in this Orion fork; if you add one, disconnect hbConn/stateConn)
 end
