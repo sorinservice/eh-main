@@ -1,5 +1,6 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
+    print("[SorinHub] Aimbot module (v1) init")
     -- Services
     local Players     = game:GetService("Players")
     local RunService  = game:GetService("RunService")
