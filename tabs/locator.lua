@@ -1,24 +1,18 @@
 -- tabs/locator.lua
--- SorinHub: Spawn/Destination Inspector & Bookmarks
--- - Scannt workspace nach SpawnLocation-Instanzen
--- - Listet sie in Dropdowns
--- - Kopiert CFrame / Position in die Zwischenablage (oder print, falls nicht möglich)
--- - Bookmarks: eigene Ziele speichern/löschen (persistiert)
+-- SorinHub: Spawn Inspector + Bookmarks + Dynamic Highlight
 
 return function(tab, OrionLib)
-    ----------------------------------------------------------------
-    -- Services
-    ----------------------------------------------------------------
+    print("Locator | Dev Only succsess")
     local HttpService = game:GetService("HttpService")
     local Workspace   = game:GetService("Workspace")
     local Players     = game:GetService("Players")
+    local RunService  = game:GetService("RunService")
 
+    local LP          = Players.LocalPlayer
     local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
     local SAVE_FILE   = SAVE_FOLDER .. "/spawn_inspector.json"
 
-    ----------------------------------------------------------------
-    -- Persistence helpers
-    ----------------------------------------------------------------
+    -- ---------------------- persistence ----------------------
     local function read_json(path)
         local ok, res = pcall(function()
             if isfile and isfile(path) then
@@ -33,44 +27,52 @@ return function(tab, OrionLib)
             if writefile then writefile(path, HttpService:JSONEncode(tbl)) end
         end)
     end
+    local function set_clip(text)
+        if setclipboard then setclipboard(text); return true end
+        return false
+    end
+    local function cf_to_strings(cf)
+        local p = cf.Position
+        return string.format("CFrame.new(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z),
+               string.format("Vector3.new(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z)
+    end
+    local function path_of(inst)
+        local t, cur = {}, inst
+        while cur and cur ~= game do table.insert(t, 1, cur.Name); cur = cur.Parent end
+        return table.concat(t, ".")
+    end
+    local function notify(t, m, secs) OrionLib:MakeNotification({Name=t, Content=m, Time=secs or 3}) end
 
-    ----------------------------------------------------------------
-    -- State
-    ----------------------------------------------------------------
+    -- ---------------------- state ----------------------
     local STATE = {
-        Scan = {               -- aus workspace gefunden
-            items = {},        -- { {id=1,name="SpawnLocation", path="workspace.Model.SpawnLocation", cfstr="CFrame.new(...)", v3str="Vector3.new(...)"}, ... }
-            names = {},        -- reiner Namen-Array fürs Dropdown
-            byName = {},       -- map name->item
-            selected = nil,    -- aktuell im Dropdown gewählt (Name)
-        },
-        Bookmarks = {          -- eigene Ziele
-            items = {},        -- map alias -> { x=, y=, z= }  (optional rx/ry/rz später)
-            names = {},        -- alias-Liste fürs Dropdown
-            selected = nil     -- aktuell im Dropdown gewählt (Alias)
+        Scan = { items={}, names={}, byName={}, selected=nil },
+        Bookmarks = { items={}, names={}, selected=nil },
+        Highlighter = {
+            Enabled = false,
+            MaxDistance = 500,
+            -- runtime:
+            GuiFolder = nil,  -- ScreenGui container
+            Pool = {},        -- key = Instance, value = BillboardGui
+            Conn = nil,
         }
     }
 
-    -- Lade gespeicherte Bookmarks & evtl. letzte Scan-Ergebnisse
+    -- load bookmarks & last scan
     do
         local saved = read_json(SAVE_FILE) or {}
         STATE.Bookmarks.items = saved.bookmarks or {}
-        -- Namenliste initialisieren
-        STATE.Bookmarks.names = {}
         for alias,_ in pairs(STATE.Bookmarks.items) do table.insert(STATE.Bookmarks.names, alias) end
         table.sort(STATE.Bookmarks.names)
-        -- (Optional) letzten Scan wiederherstellen
+
         if saved.lastScan and saved.lastScan.items then
             STATE.Scan.items = saved.lastScan.items
-            STATE.Scan.names = {}
-            STATE.Scan.byName = {}
             for _,it in ipairs(STATE.Scan.items) do
-                table.insert(STATE.Scan.names, it.name)
+                STATE.Scan.names[#STATE.Scan.names+1] = it.name
                 STATE.Scan.byName[it.name] = it
             end
+            STATE.Scan.selected = STATE.Scan.names[1]
         end
     end
-
     local function save_all()
         write_json(SAVE_FILE, {
             bookmarks = STATE.Bookmarks.items,
@@ -78,175 +80,194 @@ return function(tab, OrionLib)
         })
     end
 
-    ----------------------------------------------------------------
-    -- Utils
-    ----------------------------------------------------------------
-    local function cf_to_strings(cf)
-        local p = cf.Position
-        -- kurze, saubere Kopiervarianten
-        local v3 = string.format("Vector3.new(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z)
-        local c3 = string.format("CFrame.new(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z)
-        return c3, v3
-    end
-
-    local function full_path(inst)
-        local path = {}
-        local cur = inst
-        while cur and cur ~= game do
-            table.insert(path, 1, cur.Name)
-            cur = cur.Parent
-        end
-        return table.concat(path, ".")
-    end
-
-    local function set_clipboard(text)
-        if setclipboard then
-            setclipboard(text)
-            return true
-        end
-        return false
-    end
-
-    local function notify(title, msg, t)
-        OrionLib:MakeNotification({ Name = title, Content = msg, Time = t or 3 })
-    end
-
-    ----------------------------------------------------------------
-    -- Scanner
-    ----------------------------------------------------------------
+    -- ---------------------- scanning ----------------------
     local function scan_spawns()
         local list, names, map = {}, {}, {}
-        local count = 0
+        local n = 0
         for _, inst in ipairs(Workspace:GetDescendants()) do
             if inst:IsA("SpawnLocation") then
-                count += 1
-                local cf = inst.CFrame
-                local cfstr, v3str = cf_to_strings(cf)
-                local name = string.format("#%02d %s", count, inst.Name)
+                n += 1
+                local cfstr, v3str = cf_to_strings(inst.CFrame)
+                local name = string.format("#%02d %s", n, inst.Name)
                 local item = {
-                    id    = count,
-                    name  = name,
-                    path  = full_path(inst),
-                    cfstr = cfstr,
-                    v3str = v3str,
+                    id=n, name=name, path=path_of(inst), cfstr=cfstr, v3str=v3str,
                 }
-                table.insert(list, item)
-                table.insert(names, name)
+                list[#list+1] = item
+                names[#names+1] = name
                 map[name] = item
             end
         end
-
-        STATE.Scan.items  = list
-        STATE.Scan.names  = names
-        STATE.Scan.byName = map
+        STATE.Scan.items, STATE.Scan.names, STATE.Scan.byName = list, names, map
         STATE.Scan.selected = names[1]
-
         save_all()
-        return count
+        return n
     end
 
-    ----------------------------------------------------------------
-    -- UI
-    ----------------------------------------------------------------
+    -- ---------------------- highlighter ----------------------
+    local function ensure_gui_folder()
+        if STATE.Highlighter.GuiFolder then return end
+        local g = Instance.new("ScreenGui")
+        g.Name = "Sorin_SpawnHighlighter"
+        g.ResetOnSpawn = false
+        g.IgnoreGuiInset = true
+        g.Parent = game:GetService("CoreGui")
+        STATE.Highlighter.GuiFolder = g
+    end
+    local function alloc_billboard(forPart, text)
+        ensure_gui_folder()
+        local bb = Instance.new("BillboardGui")
+        bb.Name = "SpawnHint"
+        bb.Adornee = forPart
+        bb.Size = UDim2.fromOffset(220, 46)
+        bb.AlwaysOnTop = true
+        bb.MaxDistance = 999999
+        bb.StudsOffset = Vector3.new(0, 3.5, 0)
+        bb.Parent = STATE.Highlighter.GuiFolder
+
+        local bg = Instance.new("Frame")
+        bg.Size = UDim2.fromScale(1,1)
+        bg.BackgroundColor3 = Color3.fromRGB(10,10,10)
+        bg.BackgroundTransparency = 0.35
+        bg.Parent = bb
+        local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0,10); corner.Parent = bg
+        local stroke = Instance.new("UIStroke"); stroke.ApplyStrokeMode="Border"; stroke.Color=Color3.fromRGB(70,70,70); stroke.Parent=bg
+
+        local lbl = Instance.new("TextLabel")
+        lbl.BackgroundTransparency = 1
+        lbl.TextWrapped = true
+        lbl.TextScaled = true
+        lbl.Font = Enum.Font.GothamSemibold
+        lbl.TextColor3 = Color3.fromRGB(235,235,235)
+        lbl.Size = UDim2.fromScale(1,1)
+        lbl.Text = text
+        lbl.Parent = bg
+
+        return bb
+    end
+    local function free_billboard(inst)
+        local bb = STATE.Highlighter.Pool[inst]
+        if bb then
+            STATE.Highlighter.Pool[inst] = nil
+            pcall(function() bb:Destroy() end)
+        end
+    end
+    local function clear_all_billboards()
+        for inst,_ in pairs(STATE.Highlighter.Pool) do free_billboard(inst) end
+    end
+
+    local function start_highlight_loop()
+        if STATE.Highlighter.Conn then return end
+        ensure_gui_folder()
+        STATE.Highlighter.Conn = RunService.Heartbeat:Connect(function()
+            local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp then clear_all_billboards(); return end
+            local myPos = hrp.Position
+
+            -- fast membership set für vorhandene spawns
+            local exists = {}
+            for _,it in ipairs(STATE.Scan.items) do
+                exists[it.path] = true
+            end
+
+            -- live gehen wir über echte Instanzen (falls rescan nötig)
+            -- leichte Optimierung: nur direkte children, dann descendants fallback
+            for _,inst in ipairs(Workspace:GetDescendants()) do
+                if inst:IsA("SpawnLocation") then
+                    local dist = (inst.Position - myPos).Magnitude
+                    local bb = STATE.Highlighter.Pool[inst]
+                    if dist <= STATE.Highlighter.MaxDistance and STATE.Highlighter.Enabled then
+                        if not bb then
+                            local labelText = inst.Name
+                            -- optional index aus Scan übernehmen:
+                            -- suche in STATE.Scan.items nach path match
+                            for _,it in ipairs(STATE.Scan.items) do
+                                if it.path == path_of(inst) then
+                                    labelText = string.format("%s  (%s)", it.name, inst.Name)
+                                    break
+                                end
+                            end
+                            bb = alloc_billboard(inst, labelText)
+                            STATE.Highlighter.Pool[inst] = bb
+                        end
+                        bb.Enabled = true
+                    else
+                        if bb then bb.Enabled = false end
+                    end
+                end
+            end
+            -- toter Eintrag bereinigen
+            for inst,bb in pairs(STATE.Highlighter.Pool) do
+                if not inst or not inst.Parent then
+                    free_billboard(inst)
+                end
+            end
+        end)
+    end
+    local function stop_highlight_loop()
+        if STATE.Highlighter.Conn then
+            STATE.Highlighter.Conn:Disconnect()
+            STATE.Highlighter.Conn = nil
+        end
+        clear_all_billboards()
+    end
+
+    -- ---------------------- UI ----------------------
     local secScan  = tab:AddSection({ Name = "Workspace Spawns" })
     local secBook  = tab:AddSection({ Name = "Bookmarks" })
+    local secHi    = tab:AddSection({ Name = "Highlight Nearby" })
     local secTools = tab:AddSection({ Name = "Tools" })
 
-    -- Scan Button + Counter
+    -- Scan on open (sofort gefüllt)
+    local initialCount = scan_spawns()
+
+    local lblCount = secScan:AddLabel(("Gefunden: %d"):format(initialCount))
+    local ddScan   -- forward decl
+
     secScan:AddButton({
-        Name = "Scan SpawnLocation",
+        Name = "Rescan SpawnLocation",
         Callback = function()
             local n = scan_spawns()
-            notify("Inspector", ("Gefunden: %d SpawnLocation(s)."):format(n))
+            lblCount:Set(("Gefunden: %d"):format(n))
+            if ddScan then ddScan:Refresh(STATE.Scan.names, true) end
+            notify("Inspector", "Rescan fertig.")
         end
     })
 
-    local lblCount = secScan:AddLabel(("Gefunden: %d"):format(#STATE.Scan.items))
-
-    -- Dropdown der Scan-Ergebnisse
-    local ddScan = secScan:AddDropdown({
+    ddScan = secScan:AddDropdown({
         Name = "Spawn auswählen",
         Default = STATE.Scan.selected,
         Options = STATE.Scan.names,
         Callback = function(v) STATE.Scan.selected = v end
     })
 
-    -- Copy Buttons
     secScan:AddButton({
-        Name = "Copy CFrame (CFrame.new(x,y,z))",
+        Name = "Copy CFrame",
         Callback = function()
             local it = STATE.Scan.byName[STATE.Scan.selected or ""]
             if not it then notify("Inspector","Bitte erst scannen / auswählen."); return end
-            if set_clipboard(it.cfstr) then
-                notify("Copied", "CFrame in Clipboard.")
-            else
-                print("[Spawn CFrame]", it.name, it.cfstr)
-                notify("Copied", "Clipboard nicht verfügbar – in Konsole gedruckt.")
-            end
+            if set_clip(it.cfstr) then notify("Copied","CFrame in Clipboard.")
+            else print("[Spawn CFrame]", it.name, it.cfstr); notify("Copied","In Konsole gedruckt.") end
         end
     })
     secScan:AddButton({
-        Name = "Copy Position (Vector3.new(x,y,z))",
+        Name = "Copy Position (Vector3)",
         Callback = function()
             local it = STATE.Scan.byName[STATE.Scan.selected or ""]
             if not it then notify("Inspector","Bitte erst scannen / auswählen."); return end
-            if set_clipboard(it.v3str) then
-                notify("Copied", "Vector3 in Clipboard.")
-            else
-                print("[Spawn Position]", it.name, it.v3str)
-                notify("Copied", "Clipboard nicht verfügbar – in Konsole gedruckt.")
-            end
+            if set_clip(it.v3str) then notify("Copied","Vector3 in Clipboard.")
+            else print("[Spawn Position]", it.name, it.v3str); notify("Copied","In Konsole gedruckt.") end
         end
     })
 
-    -- Bookmark: hinzufügen (Alias via TextBox + Quelle wählbar: Auswahl/CurrentPos)
+    -- Bookmarks: simpel – Alias -> Position
     local lastAlias = ""
-    local tbAlias = secBook:AddTextbox({
+    secBook:AddTextbox({
         Name = "Neuer Bookmark-Name",
         Default = "",
         TextDisappear = false,
         Callback = function(txt) lastAlias = txt end
     })
 
-    secBook:AddButton({
-        Name = "Bookmark aus Auswahl hinzufügen",
-        Callback = function()
-            if (lastAlias or "") == "" then notify("Bookmarks","Bitte einen Namen eingeben."); return end
-            local it = STATE.Scan.byName[STATE.Scan.selected or ""]
-            if not it then notify("Bookmarks","Keine Auswahl vorhanden."); return end
-
-            -- Parse aus v3str (einfachster Weg)
-            local x,y,z = it.v3str:match("Vector3%.new%(([-%d%.]+), ([-%d%.]+), ([-%d%.]+)%)")
-            if not x then notify("Bookmarks","Konnte Position nicht lesen."); return end
-            STATE.Bookmarks.items[lastAlias] = { x = tonumber(x), y = tonumber(y), z = tonumber(z) }
-            -- UI Namen aktualisieren
-            table.insert(STATE.Bookmarks.names, lastAlias)
-            table.sort(STATE.Bookmarks.names)
-            ddBookmarks:Refresh(STATE.Bookmarks.names, true)
-            STATE.Bookmarks.selected = lastAlias
-            save_all()
-            notify("Bookmarks", "Gespeichert als \""..lastAlias.."\".")
-        end
-    })
-
-    secBook:AddButton({
-        Name = "Bookmark aus aktueller Spielerposition",
-        Callback = function()
-            if (lastAlias or "") == "" then notify("Bookmarks","Bitte einen Namen eingeben."); return end
-            local hrp = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if not hrp then notify("Bookmarks","Keine Spielerposition verfügbar."); return end
-            local p = hrp.Position
-            STATE.Bookmarks.items[lastAlias] = { x = p.X, y = p.Y, z = p.Z }
-            table.insert(STATE.Bookmarks.names, lastAlias)
-            table.sort(STATE.Bookmarks.names)
-            ddBookmarks:Refresh(STATE.Bookmarks.names, true)
-            STATE.Bookmarks.selected = lastAlias
-            save_all()
-            notify("Bookmarks", "Gespeichert aus Spielerposition.")
-        end
-    })
-
-    -- Dropdown + Copy/Remove
     local ddBookmarks = secBook:AddDropdown({
         Name = "Bookmark auswählen",
         Default = STATE.Bookmarks.selected,
@@ -255,51 +276,87 @@ return function(tab, OrionLib)
     })
 
     secBook:AddButton({
+        Name = "Bookmark aus Auswahl hinzufügen",
+        Callback = function()
+            if (lastAlias or "") == "" then notify("Bookmarks","Bitte Namen eingeben."); return end
+            local it = STATE.Scan.byName[STATE.Scan.selected or ""]
+            if not it then notify("Bookmarks","Keine Auswahl vorhanden."); return end
+            local x,y,z = it.cfstr:match("CFrame%.new%(([-%d%.]+), ([-%d%.]+), ([-%d%.]+)%)")
+            if not x then notify("Bookmarks","Konnte Position nicht lesen."); return end
+            STATE.Bookmarks.items[lastAlias] = {x=tonumber(x),y=tonumber(y),z=tonumber(z)}
+            table.insert(STATE.Bookmarks.names, lastAlias); table.sort(STATE.Bookmarks.names)
+            ddBookmarks:Refresh(STATE.Bookmarks.names, true); STATE.Bookmarks.selected = lastAlias
+            save_all(); notify("Bookmarks", "Gespeichert als \""..lastAlias.."\".")
+        end
+    })
+    secBook:AddButton({
+        Name = "Bookmark aus Spielerposition",
+        Callback = function()
+            if (lastAlias or "") == "" then notify("Bookmarks","Bitte Namen eingeben."); return end
+            local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp then notify("Bookmarks","Keine Spielerposition."); return end
+            local p = hrp.Position
+            STATE.Bookmarks.items[lastAlias] = {x=p.X,y=p.Y,z=p.Z}
+            table.insert(STATE.Bookmarks.names, lastAlias); table.sort(STATE.Bookmarks.names)
+            ddBookmarks:Refresh(STATE.Bookmarks.names, true); STATE.Bookmarks.selected = lastAlias
+            save_all(); notify("Bookmarks", "Gespeichert aus Spielerposition.")
+        end
+    })
+    secBook:AddButton({
         Name = "Copy Bookmark (CFrame)",
         Callback = function()
             local alias = STATE.Bookmarks.selected
-            local data  = alias and STATE.Bookmarks.items[alias]
-            if not data then notify("Bookmarks","Bitte Bookmark wählen."); return end
-            local cfstr = string.format("CFrame.new(%.2f, %.2f, %.2f)", data.x, data.y, data.z)
-            if set_clipboard(cfstr) then
-                notify("Copied", "Bookmark-CFrame kopiert.")
-            else
-                print("[Bookmark CFrame]", alias, cfstr)
-                notify("Copied", "Clipboard nicht verfügbar – in Konsole gedruckt.")
-            end
+            local d = alias and STATE.Bookmarks.items[alias]
+            if not d then notify("Bookmarks","Bitte Bookmark wählen."); return end
+            local s = string.format("CFrame.new(%.2f, %.2f, %.2f)", d.x, d.y, d.z)
+            if set_clip(s) then notify("Copied","Bookmark CFrame kopiert.")
+            else print("[Bookmark CFrame]", alias, s); notify("Copied","In Konsole gedruckt.") end
         end
     })
-
     secBook:AddButton({
         Name = "Bookmark löschen",
         Callback = function()
             local alias = STATE.Bookmarks.selected
             if not alias then notify("Bookmarks","Kein Bookmark ausgewählt."); return end
             STATE.Bookmarks.items[alias] = nil
-            -- Namenliste neu bauen
             STATE.Bookmarks.names = {}
             for k,_ in pairs(STATE.Bookmarks.items) do table.insert(STATE.Bookmarks.names, k) end
             table.sort(STATE.Bookmarks.names)
             ddBookmarks:Refresh(STATE.Bookmarks.names, true)
             STATE.Bookmarks.selected = STATE.Bookmarks.names[1]
-            save_all()
-            notify("Bookmarks","Gelöscht.")
+            save_all(); notify("Bookmarks","Gelöscht.")
         end
     })
 
-    -- Hilfstools
+    -- Highlight controls
+    secHi:AddToggle({
+        Name = "Spawns in der Nähe highlighten",
+        Default = false,
+        Callback = function(v)
+            STATE.Highlighter.Enabled = v
+            if v then start_highlight_loop() else stop_highlight_loop() end
+        end
+    })
+    secHi:AddSlider({
+        Name = "Highlight Distanz",
+        Min = 100, Max = 2000, Increment = 50,
+        Default = STATE.Highlighter.MaxDistance,
+        ValueName = "studs",
+        Callback = function(v) STATE.Highlighter.MaxDistance = math.floor(v) end
+    })
+
+    -- Tools
     secTools:AddButton({
-        Name = "Rescan & UI aktualisieren",
+        Name = "Aktuelle Auswahl im Output anzeigen",
         Callback = function()
-            local n = scan_spawns()
-            lblCount:Set(("Gefunden: %d"):format(n))
-            ddScan:Refresh(STATE.Scan.names, true)
-            notify("Inspector", "Rescan fertig.")
+            local it = STATE.Scan.byName[STATE.Scan.selected or ""]
+            if not it then notify("Inspector","Kein Eintrag ausgewählt."); return end
+            print(("[SorinHub Locator]\nName: %s\nPath: %s\n%s\n%s"):format(it.name, it.path, it.cfstr, it.v3str))
+            notify("Inspector", "In Konsole ausgegeben.")
         end
     })
 
-    -- Initiale UI-Werte setzen
-    lblCount:Set(("Gefunden: %d"):format(#STATE.Scan.items))
-    ddScan:Refresh(STATE.Scan.names, true)
-    ddBookmarks:Refresh(STATE.Bookmarks.names, true)
+    -- final init refresh (falls der erste Scan oben lief)
+    if ddScan then ddScan:Refresh(STATE.Scan.names, true) end
+    if ddBookmarks then ddBookmarks:Refresh(STATE.Bookmarks.names, true) end
 end
