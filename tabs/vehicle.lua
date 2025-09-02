@@ -284,6 +284,28 @@ return function(tab, OrionLib)
     local fullNoClip    = false
     local groundLock    = false -- blockiert Bewegung während SafeFly-Lock
     local exitBlockUntil= 0
+    
+    -- Verhindert „durch die Wand pivoten“, wenn Full-NoClip AUS ist
+local function sweepMove(v, fromCF, toCF)
+    local delta = toCF.Position - fromCF.Position
+    local dist  = delta.Magnitude
+    if dist < 1e-3 then return toCF end
+
+    local dir = delta.Unit
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = {v} -- Fahrzeug ignorieren
+
+    -- +4 studs „Vorfühler“, 3 studs Abstand vorm Treffer stehen bleiben
+    local hit = Workspace:Raycast(fromCF.Position, dir * (dist + 4), params)
+    if hit then
+        local stopPos = hit.Position - dir * 3
+        return CFrame.new(stopPos, stopPos + Camera.CFrame.LookVector)
+    else
+        return toCF
+    end
+end
+
 
     local function forEachPart(vf, fn)
         if not vf then return end
@@ -300,27 +322,30 @@ return function(tab, OrionLib)
     end
 
     local function setFlightPhysics(vf, on)
-        if not vf then return end
-        if on then
-            savedFlags = {}
-            forEachPart(vf, function(bp)
-                savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
-                bp.Anchored   = true
-                bp.CanCollide = fullNoClip and false or true
-            end)
-            zeroMotion(vf)
-        else
-            for bp,fl in pairs(savedFlags) do
-                if bp and bp.Parent then
-                    bp.Anchored   = fl.Anchored
-                    bp.CanCollide = fl.CanCollide
-                    bp.AssemblyLinearVelocity  = Vector3.new(0,-10,0)
-                    bp.AssemblyAngularVelocity = Vector3.new()
-                end
+    if not vf then return end
+    if on then
+        savedFlags = {}
+        forEachPart(vf, function(bp)
+            savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
+            bp.Anchored   = true
+            -- Full-NoClip: keine Kollision; sonst bleibt Kollision EIN
+            bp.CanCollide = (not fullNoClip)
+            bp.AssemblyLinearVelocity  = Vector3.new()
+            bp.AssemblyAngularVelocity = Vector3.new()
+        end)
+    else
+        for bp,fl in pairs(savedFlags) do
+            if bp and bp.Parent then
+                bp.Anchored   = fl.Anchored
+                bp.CanCollide = fl.CanCollide
+                bp.AssemblyLinearVelocity  = Vector3.new(0,-10,0)
+                bp.AssemblyAngularVelocity = Vector3.new()
             end
-            savedFlags = {}
         end
+        savedFlags = {}
     end
+end
+
 
     local function settleToGround(v)
         if not v then return end
