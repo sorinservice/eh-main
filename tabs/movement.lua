@@ -2,8 +2,7 @@
 -- SorinHub - Movement Tab (UI 0.1..1.0 mapped to internal 0.8..5.0)
 
 return function(tab, OrionLib)
-    print("movement_test_v2.7_uiMap")
-
+    
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local Workspace    = game:GetService("Workspace")
