@@ -1,18 +1,23 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    --=========================
-    -- Services & locals
-    --=========================
+    ---------------------------------------------------------------
+    -- Vehicle Mod (SorinHub)
+    -- - To Vehicle / Bring Vehicle (mit Sperren wenn bereits im Auto / Fly aktiv)
+    -- - License Plate lokal + persistent
+    -- - Car Fly (X / UI-Toggle), Safe Fly, Mobile Fly
+    -- - Robust release beim Fly-Aus (kein "in der Luft hängen")
+    ---------------------------------------------------------------
     local Players      = game:GetService("Players")
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
     local HttpService  = game:GetService("HttpService")
     local Workspace    = game:GetService("Workspace")
-    local LP           = Players.LocalPlayer
-    local Camera       = Workspace.CurrentCamera
 
-    local SAVE_FOLDER  = OrionLib.Folder or "SorinConfig"
-    local SAVE_FILE    = SAVE_FOLDER.."/vehicle.json"
+    local LP      = Players.LocalPlayer
+    local Camera  = Workspace.CurrentCamera
+
+    local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
+    local SAVE_FILE   = SAVE_FOLDER .. "/vehicle.json"
 
     local function notify(t, m, s) OrionLib:MakeNotification({Name=t, Content=m, Time=s or 3}) end
     local function read_json(path)
@@ -28,9 +33,9 @@ return function(tab, OrionLib)
         end)
     end
 
-    --=========================
-    -- Persistenz (nur Plate)
-    --=========================
+    ----------------------------------------------------------------
+    -- Persistenz (nur Kennzeichen-Text)
+    ----------------------------------------------------------------
     local CFG = { plateText = "" }
     do
         local saved = read_json(SAVE_FILE)
@@ -40,9 +45,9 @@ return function(tab, OrionLib)
     end
     local function save_cfg() write_json(SAVE_FILE, { plateText = CFG.plateText }) end
 
-    --=========================
+    ----------------------------------------------------------------
     -- Vehicle helpers
-    --=========================
+    ----------------------------------------------------------------
     local function VehiclesFolder()
         return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
     end
@@ -82,20 +87,28 @@ return function(tab, OrionLib)
     end
     local function findDriverPrompt(vf)
         if not vf then return nil end
-        local best
         for _,pp in ipairs(vf:GetDescendants()) do
             if pp:IsA("ProximityPrompt") then
                 local a = string.lower(pp.ActionText or "")
                 local o = string.lower(pp.ObjectText or "")
-                if a:find("driver") or a:find("seat") or o:find("driver") or o:find("seat") or a:find("fahrer") or o:find("fahrer") then
-                    best = pp; break
+                if a:find("driver") or a:find("seat") or a:find("fahrer") or o:find("driver") or o:find("seat") or o:find("fahrer") then
+                    return pp
                 end
             end
         end
-        return best
+        return nil
     end
+
+    local function isSeatedInOwnVehicle()
+        local vf = myVehicleFolder(); if not vf then return false, nil, vf end
+        local seat = findDriveSeat(vf); if not seat then return false, nil, vf end
+        local hum  = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum and seat.Occupant == hum then return true, seat, vf end
+        return false, seat, vf
+    end
+
     local function pressPrompt(pp, tries)
-        tries = tries or 10
+        tries = tries or 12
         if not pp then return false end
         for _=1,tries do
             if typeof(fireproximityprompt) == "function" then
@@ -104,20 +117,20 @@ return function(tab, OrionLib)
                 pp:InputHoldBegin(); task.wait(math.max(pp.HoldDuration or 0.15, 0.1)); pp:InputHoldEnd()
             end
             task.wait(0.08)
-            local seat = findDriveSeat(myVehicleFolder())
-            local hum  = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-            if seat and hum and seat.Occupant == hum then return true end
+            local okSeat = isSeatedInOwnVehicle()
+            if okSeat then return true end
         end
         return false
     end
+
     local function sitIn(seat)
         local char = LP.Character or LP.CharacterAdded:Wait()
         local hum  = char:FindFirstChildOfClass("Humanoid")
         if not (seat and hum) then return false end
 
-        -- 1) ProximityPrompt bevorzugen
-        local vf, pp = myVehicleFolder(), nil
-        if vf then pp = findDriverPrompt(vf) end
+        -- 1) ProximityPrompt (bevorzugt)
+        local vf = myVehicleFolder()
+        local pp = vf and findDriverPrompt(vf) or nil
         if pp then
             local base = (pp.Parent and (pp.Parent.GetPivot and pp.Parent:GetPivot()) or CFrame.new(pp.Parent.Position)) or CFrame.new()
             char:WaitForChild("HumanoidRootPart").CFrame = base * CFrame.new(-1.2, 1.4, 0.2)
@@ -129,22 +142,21 @@ return function(tab, OrionLib)
         local ok = pcall(function() seat:Sit(hum) end)
         if ok and seat.Occupant == hum then return true end
 
-        -- 3) Vor den Sitz moven
+        -- 3) Vor den Sitz laufen (NICHT mehr "hinter" setzen)
         if hum.RootPart then
-            hum:MoveTo(seat.Position + seat.CFrame.LookVector * -1)
+            hum:MoveTo(seat.Position + seat.CFrame.LookVector * 1)
             local t0 = time()
             while time() - t0 < 1.2 do
                 task.wait()
                 if seat.Occupant == hum then return true end
             end
-            hum.RootPart.CFrame = seat.CFrame * CFrame.new(0, 0.1, -0.2)
         end
         return seat.Occupant == hum
     end
 
-    --=========================
-    -- Plate (lokal)
-    --=========================
+    ----------------------------------------------------------------
+    -- Kennzeichen (lokal)
+    ----------------------------------------------------------------
     local function applyPlateTextTo(vf, txt)
         if not (vf and txt and txt ~= "") then return end
         local lpRoot = vf:FindFirstChild("LicensePlates", true) or vf:FindFirstChild("LicencePlates", true)
@@ -159,7 +171,6 @@ return function(tab, OrionLib)
             setLabel(lpRoot:FindFirstChild("Back", true))
             setLabel(lpRoot:FindFirstChild("Front", true))
         else
-            -- Fallback: jede TextLabel im Fahrzeug
             for _,d in ipairs(vf:GetDescendants()) do
                 if d:IsA("TextLabel") then pcall(function() d.Text = txt end) end
             end
@@ -174,10 +185,8 @@ return function(tab, OrionLib)
             notify("Vehicle","Kein Fahrzeug / leerer Text.",2)
         end
     end
-    -- Auto-apply bei (Re)Spawn des Fahrzeugs
     task.spawn(function()
-        local vroot = VehiclesFolder()
-        if not vroot then return end
+        local vroot = VehiclesFolder(); if not vroot then return end
         vroot.ChildAdded:Connect(function(ch)
             task.wait(0.7)
             if ch and (ch.Name == LP.Name or ch:GetAttribute("Owner") == LP.Name) and CFG.plateText ~= "" then
@@ -186,33 +195,42 @@ return function(tab, OrionLib)
         end)
     end)
 
-    --=========================
-    -- Bring / To Vehicle
-    --=========================
+    ----------------------------------------------------------------
+    -- To / Bring Vehicle (mit Sperren)
+    ----------------------------------------------------------------
     local WARN_DISTANCE = 300
     local TO_OFFSET     = CFrame.new(-2.0, 0.5, 0)
-    local BRING_AHEAD   = 10    -- studs
+    local BRING_AHEAD   = 10
     local BRING_UP      = 2
 
     local function toVehicle()
-        local vf, seat = myVehicleFolder(), nil
-        if not vf then notify("Vehicle","Kein eigenes Fahrzeug gefunden."); return end
-        seat = findDriveSeat(vf)
-        if not seat then notify("Vehicle","Kein Fahrersitz gefunden."); return end
+        local seated = isSeatedInOwnVehicle()
+        if seated then notify("Vehicle","Du sitzt bereits im Fahrzeug."); return end
+
+        local vf = myVehicleFolder(); if not vf then notify("Vehicle","Kein eigenes Fahrzeug gefunden."); return end
+        local seat = findDriveSeat(vf); if not seat then notify("Vehicle","Kein Fahrersitz gefunden."); return end
 
         local hrp = (LP.Character or LP.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
         local dist = (hrp.Position - seat.Position).Magnitude
-        if dist > WARN_DISTANCE then
-            notify("Vehicle",("Achtung: weit entfernt (~%d studs)."):format(math.floor(dist)),3)
-        end
+        if dist > WARN_DISTANCE then notify("Vehicle",("Achtung: weit entfernt (~%d studs)."):format(dist),3) end
+
         hrp.CFrame = seat.CFrame * TO_OFFSET
         task.wait(0.06)
         sitIn(seat)
     end
 
     local function bringVehicle()
-        local vf = myVehicleFolder()
-        if not vf then notify("Vehicle","Kein Fahrzeug gefunden."); return end
+        if isSeatedInOwnVehicle() then
+            notify("Vehicle","Schon im Auto – Bring/To sind in der Fahrt deaktiviert.")
+            return
+        end
+        -- falls Fly aktiv, ebenfalls blocken (siehe unten state)
+        if _G.__Sorin_FlyActive then
+            notify("Vehicle","Car Fly ist aktiv – erst deaktivieren.")
+            return
+        end
+
+        local vf = myVehicleFolder(); if not vf then notify("Vehicle","Kein Fahrzeug gefunden."); return end
         ensurePrimaryPart(vf)
 
         local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
@@ -223,21 +241,23 @@ return function(tab, OrionLib)
         local cf   = CFrame.lookAt(pos, pos + look)
         pcall(function() vf:PivotTo(cf) end)
 
-        -- direkt einsteigen
         local seat = findDriveSeat(vf)
         task.wait(0.05)
         if seat then sitIn(seat) end
     end
 
-    --=========================
-    -- Car Fly
-    --=========================
-    local flyEnabled   = false
-    local flySpeed     = 130 -- default
-    local safeFly      = false
-    local flyConn      = nil
-    local lastAirCF    = nil
-    local savedFlags   = {} -- [BasePart] = {Anchored, CanCollide}
+    ----------------------------------------------------------------
+    -- Car Fly (nur im eigenen Auto, robustes Release)
+    ----------------------------------------------------------------
+    local flyEnabled      = false
+    local flySpeed        = 130
+    local safeFly         = false
+    local flyConn         = nil
+    local seatMonitorConn = nil
+    local savedFlags      = {} -- [BasePart] = {Anchored, CanCollide}
+    local suppressFlyCB   = false
+    local flyToggleUI     = nil
+    _G.__Sorin_FlyActive  = false
 
     local function forEachPart(vf, fn)
         if not vf then return end
@@ -245,6 +265,7 @@ return function(tab, OrionLib)
             if p:IsA("BasePart") then fn(p) end
         end
     end
+
     local function setFlightPhysics(vf, on)
         if not vf then return end
         if on then
@@ -259,44 +280,89 @@ return function(tab, OrionLib)
                 if bp and bp.Parent then
                     bp.Anchored   = fl.Anchored
                     bp.CanCollide = fl.CanCollide
-                    bp.AssemblyLinearVelocity = Vector3.new(0,-3,0)
+                    -- Down-nudge um Schweben zu lösen
+                    local v = bp.AssemblyLinearVelocity
+                    bp.AssemblyLinearVelocity = Vector3.new(v.X, math.min(v.Y, -6), v.Z)
                 end
+            end
+            -- Fallback für Teile, die während des Flugs gespawnt wurden (ohne savedFlags):
+            local vfpp = myVehicleFolder()
+            if vfpp then
+                forEachPart(vfpp, function(bp)
+                    if not savedFlags[bp] then
+                        bp.Anchored = false
+                        bp.CanCollide = true
+                        bp.AssemblyLinearVelocity += Vector3.new(0,-6,0)
+                    end
+                end)
+                -- Minimaler Pivot-Nudge, um Physik zu “wecken”
+                pcall(function() vfpp:PivotTo(vfpp:GetPivot() * CFrame.new(0, 0.05, 0)) end)
             end
             savedFlags = {}
         end
     end
 
-    -- UI-Toggle Referenz, damit Keybind **den Toggle** spiegelt
-    local flyToggleUI -- zugewiesen unten
+    local function hardRelease()
+        local vf = myVehicleFolder(); if not vf then return end
+        setFlightPhysics(vf, false)
+    end
+
+    local function stopSeatMonitor()
+        if seatMonitorConn then seatMonitorConn:Disconnect(); seatMonitorConn = nil end
+    end
 
     local function toggleFly(state)
         if state == nil then state = not flyEnabled end
         if state == flyEnabled then return end
-        flyEnabled = state
 
+        -- Nur im eigenen Auto erlaubt
+        local seated, seat, vf = isSeatedInOwnVehicle()
+        if not seated then
+            suppressFlyCB = true
+            if flyToggleUI then flyToggleUI:Set(false) end
+            suppressFlyCB = false
+            notify("Car Fly","Du musst im eigenen Fahrzeug sitzen.")
+            flyEnabled = false
+            _G.__Sorin_FlyActive = false
+            return
+        end
+
+        flyEnabled = state
+        _G.__Sorin_FlyActive = flyEnabled
+
+        -- UI spiegeln (ohne Callback-Schleife)
+        suppressFlyCB = true
         if flyToggleUI then flyToggleUI:Set(flyEnabled) end
+        suppressFlyCB = false
 
         if flyConn then flyConn:Disconnect(); flyConn = nil end
-        local vf = myVehicleFolder(); if not vf then flyEnabled=false; notify("Car Fly","Kein Fahrzeug."); return end
-        ensurePrimaryPart(vf)
+        stopSeatMonitor()
 
         if not flyEnabled then
-            setFlightPhysics(vf, false)
+            hardRelease()
             notify("Car Fly","Deaktiviert.")
             return
         end
 
+        ensurePrimaryPart(vf)
         setFlightPhysics(vf, true)
-        lastAirCF = vf:GetPivot()
         notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
+
+        -- Sitz verlassen => Fly automatisch aus + Release
+        seatMonitorConn = seat:GetPropertyChangedSignal("Occupant"):Connect(function()
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            if not hum or seat.Occupant ~= hum then
+                toggleFly(false)
+            end
+        end)
 
         flyConn = RunService.RenderStepped:Connect(function(dt)
             if not flyEnabled then return end
-            local v = myVehicleFolder(); if not v then return end
-            local root = v:GetPivot()
-            lastAirCF = root
+            local sOK, _, vfx = isSeatedInOwnVehicle()
+            if not sOK then toggleFly(false); return end
+            local root = vfx:GetPivot()
 
-            -- Steuerung (Kamera-orientiert)
+            -- Kamera-orientierte Steuerung
             local dir = Vector3.zero
             if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
             if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
@@ -310,45 +376,53 @@ return function(tab, OrionLib)
                 local step  = dir * (flySpeed * dt)
                 local npos  = root.Position + step
                 local look  = npos + Camera.CFrame.LookVector
-                pcall(function() v:PivotTo(CFrame.lookAt(npos, look)) end)
-                lastAirCF = v:GetPivot()
+                pcall(function() vfx:PivotTo(CFrame.lookAt(npos, look)) end)
             end
         end)
 
-        -- Safe Fly: alle 6s Boden berühren, dann exakt zurück
+        -- Safe Fly: alle 6s Boden berühren, dann exakt weiter
         task.spawn(function()
             while flyEnabled do
-                if safeFly then
+                if not safeFly then task.wait(0.25) else
                     task.wait(6)
                     if not flyEnabled then break end
-                    local v = myVehicleFolder(); if not v then break end
-                    ensurePrimaryPart(v)
+                    local sOK, _, vfx = isSeatedInOwnVehicle()
+                    if not sOK or not vfx then break end
 
-                    local before = v:GetPivot()
-                    setFlightPhysics(v, false)
+                    local before = vfx:GetPivot()
+                    setFlightPhysics(vfx, false)
 
                     local params = RaycastParams.new()
                     params.FilterType = Enum.RaycastFilterType.Blacklist
-                    params.FilterDescendantsInstances = {v}
-                    local hit = Workspace:Raycast(before.Position, Vector3.new(0,-1000,0), params)
+                    params.FilterDescendantsInstances = {vfx}
+                    local hit = Workspace:Raycast(before.Position, Vector3.new(0, -1000, 0), params)
                     if hit then
-                        v:PivotTo(CFrame.new(hit.Position + Vector3.new(0,2,0)))
+                        vfx:PivotTo(CFrame.new(hit.Position + Vector3.new(0,2,0)))
                     end
 
-                    task.wait(0.5) -- kurz "erden"
-                    setFlightPhysics(v, true)
-                    pcall(function() v:PivotTo(before) end)
-                    lastAirCF = before
-                else
-                    task.wait(0.25)
+                    task.wait(0.5)
+                    setFlightPhysics(vfx, true)
+                    pcall(function() vfx:PivotTo(before) end)
                 end
             end
         end)
     end
 
-    --=========================
-    -- Mobile Fly (Hold-Buttons)
-    --=========================
+    -- Keybind X toggelt **den UI-Toggle** (kein Doppel-Flip)
+    UserInput.InputBegan:Connect(function(inp, gpe)
+        if gpe then return end
+        if inp.KeyCode == Enum.KeyCode.X and flyToggleUI then
+            -- spiegle nur den UI-Status; Callback kümmert sich um toggleFly
+            suppressFlyCB = true
+            flyToggleUI:Set(not flyEnabled)
+            suppressFlyCB = false
+            toggleFly(not flyEnabled)
+        end
+    end)
+
+    ----------------------------------------------------------------
+    -- Mobile Fly (Hold-Buttons, nur wenn im Auto)
+    ----------------------------------------------------------------
     local function spawnMobileFly()
         local gui = Instance.new("ScreenGui")
         gui.Name = "Sorin_MobileFly"
@@ -382,21 +456,31 @@ return function(tab, OrionLib)
             b.Text = txt; b.BackgroundColor3 = Color3.fromRGB(40,40,40)
             b.TextColor3 = Color3.fromRGB(230,230,230); b.Font = Enum.Font.GothamSemibold; b.TextSize = 14
             b.Parent = frame; Instance.new("UICorner", b).CornerRadius = UDim.new(0,8)
-            b.MouseButton1Down:Connect(function() hold[key] = true end)
+            b.MouseButton1Down:Connect(function()
+                if not isSeatedInOwnVehicle() then notify("Car Fly","Nur im Auto."); return end
+                hold[key] = true
+            end)
             b.MouseButton1Up:Connect(function() hold[key] = false end)
             b.MouseLeave:Connect(function() hold[key] = false end)
             return b
         end
 
-        mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(function() toggleFly() end)
+        mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(function()
+            if not isSeatedInOwnVehicle() then notify("Car Fly","Nur im Auto."); return end
+            -- mirror UI toggle
+            suppressFlyCB = true
+            flyToggleUI:Set(not flyEnabled)
+            suppressFlyCB = false
+            toggleFly(not flyEnabled)
+        end)
         mkBtn("^",      85, 34, 60, 28, "F")
-        mkBtn("v",      85, 100,60, 28, "B")
-        mkBtn("<<",     15,  67,60, 28, "L")
-        mkBtn(">>",     155, 67,60, 28, "R")
-        mkBtn("Up",     155, 34,60, 28, "U")
+        mkBtn("v",      85,100, 60, 28, "B")
+        mkBtn("<<",     15, 67, 60, 28, "L")
+        mkBtn(">>",     155,67, 60, 28, "R")
+        mkBtn("Up",     155,34, 60, 28, "U")
         mkBtn("Down",   155,100,60, 28, "D")
 
-        -- Drag
+        -- Drag über Titelzeile
         local dragging, start, startPos
         frame.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 and input.Position.Y - frame.AbsolutePosition.Y <= 30 then
@@ -413,11 +497,13 @@ return function(tab, OrionLib)
             end
         end)
 
-        -- Move while hold
+        -- Bewegung während Hold
         RunService.RenderStepped:Connect(function(dt)
             if not gui.Enabled or not flyEnabled then return end
-            local v = myVehicleFolder(); if not v then return end
-            local cf = v:GetPivot()
+            local seated, _, vfx = isSeatedInOwnVehicle()
+            if not seated or not vfx then return end
+
+            local cf = vfx:GetPivot()
             local move = Vector3.zero
             if hold.F then move += Camera.CFrame.LookVector end
             if hold.B then move -= Camera.CFrame.LookVector end
@@ -425,9 +511,10 @@ return function(tab, OrionLib)
             if hold.L then move -= Camera.CFrame.RightVector end
             if hold.U then move += Vector3.new(0,1,0) end
             if hold.D then move -= Vector3.new(0,1,0) end
+
             if move.Magnitude > 0 then
                 move = move.Unit * (flySpeed * dt)
-                v:PivotTo(CFrame.new(cf.Position + move, (cf.Position + move) + Camera.CFrame.LookVector))
+                vfx:PivotTo(CFrame.new(cf.Position + move, (cf.Position + move) + Camera.CFrame.LookVector))
             end
         end)
 
@@ -435,16 +522,26 @@ return function(tab, OrionLib)
     end
     local MobileFlyGui = spawnMobileFly()
 
-    --=========================
-    -- UI
-    --=========================
+    ----------------------------------------------------------------
+    -- UI (Orion)
+    ----------------------------------------------------------------
     local secV  = tab:AddSection({ Name = "Vehicle" })
     local secLP = tab:AddSection({ Name = "License Plate (local)" })
     local secF  = tab:AddSection({ Name = "Car Fly" })
     local secM  = tab:AddSection({ Name = "Mobile Fly" })
 
-    secV:AddButton({ Name = "To Vehicle (auf Sitz & einsteigen)",      Callback = toVehicle })
-    secV:AddButton({ Name = "Bring Vehicle (vor dich & einsteigen)",   Callback = bringVehicle })
+    secV:AddButton({ Name = "To Vehicle (auf Sitz & einsteigen)",    Callback = function()
+        -- block, wenn schon im Auto oder Fly aktiv
+        if isSeatedInOwnVehicle() then notify("Vehicle","Schon im Fahrzeug."); return end
+        if _G.__Sorin_FlyActive then notify("Vehicle","Car Fly aktiv – erst deaktivieren."); return end
+        toVehicle()
+    end })
+
+    secV:AddButton({ Name = "Bring Vehicle (vor dich & einsteigen)", Callback = function()
+        if isSeatedInOwnVehicle() then notify("Vehicle","Schon im Fahrzeug."); return end
+        if _G.__Sorin_FlyActive then notify("Vehicle","Car Fly aktiv – erst deaktivieren."); return end
+        bringVehicle()
+    end })
 
     secLP:AddTextbox({
         Name = "Kennzeichen-Text",
@@ -461,13 +558,22 @@ return function(tab, OrionLib)
     flyToggleUI = secF:AddToggle({
         Name = "Enable Car Fly",
         Default = false,
-        Callback = function(v) toggleFly(v) end
+        Callback = function(v)
+            if suppressFlyCB then return end
+            toggleFly(v)
+        end
     })
     secF:AddBind({
         Name = "Car Fly Toggle Key",
         Default = Enum.KeyCode.X,
         Hold = false,
-        Callback = function() toggleFly() end
+        Callback = function()
+            -- spiegle UI und rufe toggleFly; verhindert Doppel-Flip
+            suppressFlyCB = true
+            flyToggleUI:Set(not flyEnabled)
+            suppressFlyCB = false
+            toggleFly(not flyEnabled)
+        end
     })
     secF:AddSlider({
         Name = "Fly Speed",
@@ -487,7 +593,7 @@ return function(tab, OrionLib)
         Callback = function(v) if MobileFlyGui then MobileFlyGui.Enabled = v end end
     })
 
-    -- Wenn schon Text gesetzt, beim Start direkt anwenden (kleine Wartezeit fürs Spawnen)
+    -- Kennzeichen beim Join anwenden (falls gesetzt)
     task.defer(function()
         if CFG.plateText ~= "" then
             task.wait(1.0)
