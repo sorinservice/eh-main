@@ -1,5 +1,4 @@
 return function(tab, OrionLib)
-    print("[SorinHub] Visuals stable success")
 
     ----------------------------------------------------------------
     -- SIMPLE SWITCH (einfach hier umstellen)
