@@ -1,6 +1,5 @@
 -- tabs/aimbot.lua
 return function(tab, OrionLib)
-    print("[SorinHub] Aimbot stable success")
 
     -----------------------------
     -- Services & singletons
