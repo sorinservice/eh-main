@@ -969,14 +969,6 @@ return function(tab, OrionLib)
     end)
 end
 
-
-    -- Falls du den Sitz verlässt: Fly automatisch aus
-    RunService.Heartbeat:Connect(function()
-        if flyEnabled and not isSeated() then
-            toggleFly(false)
-        end
-    end)
-
     ------------------------------ Mobile Fly Panel ------------------------------
     local function spawnMobileFly()
         local gui = Instance.new("ScreenGui")
