@@ -3,7 +3,6 @@
 -- This file intentionally does NOT call any RemoteEvent/Function for admin features.
 
 return function(tab, OrionLib)
-    print("Modul v2.4 loaded in, u can use it")
     ----------------------------------------------------------------
     -- Services
     local Players              = game:GetService("Players")
