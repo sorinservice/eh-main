@@ -246,179 +246,154 @@ return function(tab, OrionLib)
         if seat then sitIn(seat) end
     end
 
-    ----------------------------------------------------------------
-    -- Car Fly (nur im eigenen Auto, robustes Release)
-    ----------------------------------------------------------------
-    local flyEnabled      = false
-    local flySpeed        = 130
-    local safeFly         = false
-    local flyConn         = nil
-    local seatMonitorConn = nil
-    local savedFlags      = {} -- [BasePart] = {Anchored, CanCollide}
-    local suppressFlyCB   = false
-    local flyToggleUI     = nil
-    _G.__Sorin_FlyActive  = false
+----------------------------------------------------------------
+-- Car Fly (nur im Auto) – debounce & camera-aligned rotation
+----------------------------------------------------------------
+local flyEnabled   = false
+local flySpeed     = 130
+local safeFly      = false
+local flyConn      = nil
+local savedFlags   = {}
+local flyToggleUI  = nil
+local lastAirCF    = nil
+local toggleLockTS = 0          -- prevents double-toggles within a short window
+local ROT_LERP     = 0.25       -- wie aggressiv Richtung zur Kamera lerpen (0..1)
 
-    local function forEachPart(vf, fn)
-        if not vf then return end
-        for _,p in ipairs(vf:GetDescendants()) do
-            if p:IsA("BasePart") then fn(p) end
-        end
+local function forEachPart(vf, fn)
+    if not vf then return end
+    for _,p in ipairs(vf:GetDescendants()) do
+        if p:IsA("BasePart") then fn(p) end
     end
+end
 
-    local function setFlightPhysics(vf, on)
-        if not vf then return end
-        if on then
-            savedFlags = {}
-            forEachPart(vf, function(bp)
-                savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
-                bp.Anchored   = true
-                bp.CanCollide = false
-            end)
-        else
-            for bp,fl in pairs(savedFlags) do
-                if bp and bp.Parent then
-                    bp.Anchored   = fl.Anchored
-                    bp.CanCollide = fl.CanCollide
-                    -- Down-nudge um Schweben zu lösen
-                    local v = bp.AssemblyLinearVelocity
-                    bp.AssemblyLinearVelocity = Vector3.new(v.X, math.min(v.Y, -6), v.Z)
-                end
+local function setFlightPhysics(vf, on)
+    if not vf then return end
+    if on then
+        savedFlags = {}
+        forEachPart(vf, function(bp)
+            savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
+            bp.Anchored   = true
+            bp.CanCollide = false
+        end)
+    else
+        for bp,fl in pairs(savedFlags) do
+            if bp and bp.Parent then
+                bp.Anchored   = fl.Anchored
+                bp.CanCollide = fl.CanCollide
+                bp.AssemblyLinearVelocity = Vector3.new(0,-10,0) -- sanfter Down-Nudge
             end
-            -- Fallback für Teile, die während des Flugs gespawnt wurden (ohne savedFlags):
-            local vfpp = myVehicleFolder()
-            if vfpp then
-                forEachPart(vfpp, function(bp)
-                    if not savedFlags[bp] then
-                        bp.Anchored = false
-                        bp.CanCollide = true
-                        bp.AssemblyLinearVelocity += Vector3.new(0,-6,0)
-                    end
-                end)
-                -- Minimaler Pivot-Nudge, um Physik zu “wecken”
-                pcall(function() vfpp:PivotTo(vfpp:GetPivot() * CFrame.new(0, 0.05, 0)) end)
-            end
-            savedFlags = {}
         end
+        savedFlags = {}
     end
+end
 
-    local function hardRelease()
-        local vf = myVehicleFolder(); if not vf then return end
+local function settleToGround(v)
+    if not v then return end
+    local cf = v:GetPivot()
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = {v}
+    local hit = Workspace:Raycast(cf.Position, Vector3.new(0,-1000,0), params)
+    if hit then
+        pcall(function()
+            v:PivotTo(CFrame.new(hit.Position + Vector3.new(0,2,0), hit.Position + Vector3.new(0,2,0) + Camera.CFrame.LookVector))
+        end)
+    else
+        pcall(function() v:PivotTo(cf + Vector3.new(0,-2,0)) end)
+    end
+end
+
+local function toggleFly(state)
+    -- debounce: verhindere Doppel-Flip (z.B. durch UI & Bind im selben Frame)
+    local now = os.clock()
+    if now - toggleLockTS < 0.25 then return end
+    toggleLockTS = now
+
+    if state == nil then state = not flyEnabled end
+    if state and not isSeated() then
+        notify("Car Fly","Nur im Auto nutzbar.")
+        if flyToggleUI then flyToggleUI:Set(false) end
+        return
+    end
+    if state == flyEnabled then return end
+
+    flyEnabled = state
+    if flyToggleUI then flyToggleUI:Set(flyEnabled) end
+
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+    local vf = myVehicleFolder()
+    if not vf then
+        flyEnabled = false
+        if flyToggleUI then flyToggleUI:Set(false) end
+        notify("Car Fly","Kein Fahrzeug.")
+        return
+    end
+    ensurePrimaryPart(vf)
+
+    if not flyEnabled then
         setFlightPhysics(vf, false)
+        settleToGround(vf)          -- verhindert “in der Luft hängen bleiben”
+        notify("Car Fly","Deaktiviert.")
+        return
     end
 
-    local function stopSeatMonitor()
-        if seatMonitorConn then seatMonitorConn:Disconnect(); seatMonitorConn = nil end
-    end
+    setFlightPhysics(vf, true)
+    lastAirCF = vf:GetPivot()
+    notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
 
-    local function toggleFly(state)
-        if state == nil then state = not flyEnabled end
-        if state == flyEnabled then return end
+    flyConn = RunService.RenderStepped:Connect(function(dt)
+        if not flyEnabled then return end
+        local v = myVehicleFolder(); if not v then return end
+        local root = v:GetPivot()
+        lastAirCF = root
 
-        -- Nur im eigenen Auto erlaubt
-        local seated, seat, vf = isSeatedInOwnVehicle()
-        if not seated then
-            suppressFlyCB = true
-            if flyToggleUI then flyToggleUI:Set(false) end
-            suppressFlyCB = false
-            notify("Car Fly","Du musst im eigenen Fahrzeug sitzen.")
-            flyEnabled = false
-            _G.__Sorin_FlyActive = false
-            return
+        -- Zielrotation: immer zur Kamera schauen
+        local targetLookCF = CFrame.lookAt(root.Position, root.Position + Camera.CFrame.LookVector)
+        -- optional weiches Rotations-Lerp
+        local newCF = root:Lerp(targetLookCF, math.clamp(ROT_LERP, 0, 1))
+
+        -- Bewegung basierend auf Input (kameraorientiert)
+        local dir = Vector3.zero
+        if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+        if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+
+        if dir.Magnitude > 0 then
+            dir = dir.Unit
+            local step  = dir * (flySpeed * dt)
+            local npos  = newCF.Position + step
+            newCF = CFrame.new(npos, npos + Camera.CFrame.LookVector)
         end
 
-        flyEnabled = state
-        _G.__Sorin_FlyActive = flyEnabled
+        pcall(function() v:PivotTo(newCF) end)
+        lastAirCF = newCF
+    end)
 
-        -- UI spiegeln (ohne Callback-Schleife)
-        suppressFlyCB = true
-        if flyToggleUI then flyToggleUI:Set(flyEnabled) end
-        suppressFlyCB = false
+    -- SafeFly: alle 6s kurz Boden, dann exakt zur Luft-Position zurück
+    task.spawn(function()
+        while flyEnabled do
+            if not safeFly then task.wait(0.25)
+            else
+                task.wait(6)
+                if not flyEnabled then break end
+                local v = myVehicleFolder(); if not v then break end
+                ensurePrimaryPart(v)
+                local before = v:GetPivot()
 
-        if flyConn then flyConn:Disconnect(); flyConn = nil end
-        stopSeatMonitor()
-
-        if not flyEnabled then
-            hardRelease()
-            notify("Car Fly","Deaktiviert.")
-            return
-        end
-
-        ensurePrimaryPart(vf)
-        setFlightPhysics(vf, true)
-        notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
-
-        -- Sitz verlassen => Fly automatisch aus + Release
-        seatMonitorConn = seat:GetPropertyChangedSignal("Occupant"):Connect(function()
-            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-            if not hum or seat.Occupant ~= hum then
-                toggleFly(false)
+                setFlightPhysics(v, false)
+                settleToGround(v)
+                task.wait(0.5)
+                setFlightPhysics(v, true)
+                pcall(function() v:PivotTo(before) end)
+                lastAirCF = before
             end
-        end)
-
-        flyConn = RunService.RenderStepped:Connect(function(dt)
-            if not flyEnabled then return end
-            local sOK, _, vfx = isSeatedInOwnVehicle()
-            if not sOK then toggleFly(false); return end
-            local root = vfx:GetPivot()
-
-            -- Kamera-orientierte Steuerung
-            local dir = Vector3.zero
-            if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
-            if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
-
-            if dir.Magnitude > 0 then
-                dir = dir.Unit
-                local step  = dir * (flySpeed * dt)
-                local npos  = root.Position + step
-                local look  = npos + Camera.CFrame.LookVector
-                pcall(function() vfx:PivotTo(CFrame.lookAt(npos, look)) end)
-            end
-        end)
-
-        -- Safe Fly: alle 6s Boden berühren, dann exakt weiter
-        task.spawn(function()
-            while flyEnabled do
-                if not safeFly then task.wait(0.25) else
-                    task.wait(6)
-                    if not flyEnabled then break end
-                    local sOK, _, vfx = isSeatedInOwnVehicle()
-                    if not sOK or not vfx then break end
-
-                    local before = vfx:GetPivot()
-                    setFlightPhysics(vfx, false)
-
-                    local params = RaycastParams.new()
-                    params.FilterType = Enum.RaycastFilterType.Blacklist
-                    params.FilterDescendantsInstances = {vfx}
-                    local hit = Workspace:Raycast(before.Position, Vector3.new(0, -1000, 0), params)
-                    if hit then
-                        vfx:PivotTo(CFrame.new(hit.Position + Vector3.new(0,2,0)))
-                    end
-
-                    task.wait(0.5)
-                    setFlightPhysics(vfx, true)
-                    pcall(function() vfx:PivotTo(before) end)
-                end
-            end
-        end)
-    end
-
-    -- Keybind X toggelt **den UI-Toggle** (kein Doppel-Flip)
-    UserInput.InputBegan:Connect(function(inp, gpe)
-        if gpe then return end
-        if inp.KeyCode == Enum.KeyCode.X and flyToggleUI then
-            -- spiegle nur den UI-Status; Callback kümmert sich um toggleFly
-            suppressFlyCB = true
-            flyToggleUI:Set(not flyEnabled)
-            suppressFlyCB = false
-            toggleFly(not flyEnabled)
         end
     end)
+end
+
 
     ----------------------------------------------------------------
     -- Mobile Fly (Hold-Buttons, nur wenn im Auto)
@@ -554,38 +529,29 @@ return function(tab, OrionLib)
     })
     secLP:AddButton({ Name = "Kennzeichen anwenden (aktuelles Fahrzeug)", Callback = applyPlateToCurrent })
 
-    -- Car Fly Controls
-    flyToggleUI = secF:AddToggle({
-        Name = "Enable Car Fly",
-        Default = false,
-        Callback = function(v)
-            if suppressFlyCB then return end
-            toggleFly(v)
-        end
-    })
-    secF:AddBind({
-        Name = "Car Fly Toggle Key",
-        Default = Enum.KeyCode.X,
-        Hold = false,
-        Callback = function()
-            -- spiegle UI und rufe toggleFly; verhindert Doppel-Flip
-            suppressFlyCB = true
-            flyToggleUI:Set(not flyEnabled)
-            suppressFlyCB = false
-            toggleFly(not flyEnabled)
-        end
-    })
-    secF:AddSlider({
-        Name = "Fly Speed",
-        Min = 10, Max = 190, Increment = 5,
-        Default = 130,
-        Callback = function(v) flySpeed = math.floor(v) end
-    })
-    secF:AddToggle({
-        Name = "Safe Fly (alle 6s Boden berühren)",
-        Default = false,
-        Callback = function(v) safeFly = v end
-    })
+    -- Car Fly UI (ersetzen)
+flyToggleUI = secF:AddToggle({
+    Name = "Enable Car Fly (nur im Auto)",
+    Default = false,
+    Callback = function(v) toggleFly(v) end
+})
+secF:AddBind({
+    Name = "Car Fly Toggle Key",
+    Default = Enum.KeyCode.X,
+    Hold = false,
+    Callback = function() toggleFly() end   -- spiegelt Toggle, Debounce schützt
+})
+secF:AddSlider({
+    Name = "Fly Speed",
+    Min = 10, Max = 190, Increment = 5,
+    Default = 130,
+    Callback = function(v) flySpeed = math.floor(v) end
+})
+secF:AddToggle({
+    Name = "Safe Fly (alle 6s Boden, 0.5s)",
+    Default = false,
+    Callback = function(v) safeFly = v end
+})
 
     secM:AddToggle({
         Name = "Mobile Fly Panel anzeigen",
