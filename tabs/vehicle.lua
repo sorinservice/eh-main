@@ -1,6 +1,6 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    print("Version2 DEV")
+    print("Version3 DEV")
     ---------------------------------------------------------------
     -- Vehicle Mod (SorinHub)
     -- - To Vehicle / Bring Vehicle
@@ -270,199 +270,294 @@ return function(tab, OrionLib)
     end
 
     ------------------------------ Car Fly -----------------------------------
-    local flyEnabled    = false
-    local flySpeed      = 130
-    local safeFly       = false
-    local flyConn       = nil
-    local flyToggleUI   = nil
-    local savedFlags    = {}
-    local lastAirCF     = nil
-    local toggleLockTS  = 0
-    local ROT_LERP      = 0.25
-    local fullNoClip    = false
-    local groundLock    = false
-    local exitBlockUntil= 0
+-- === Car Fly (client-physics / no anchors) =================================
+local flyEnabled    = false
+local flySpeed      = 130
+local safeFly       = false
+local flyConn       = nil
+local flyToggleUI   = nil
+local savedFlags    = {}
+local lastAirCF     = nil
+local toggleLockTS  = 0
+local ROT_LERP      = 0.25 -- (aktuell ungenutzt; kannst du später für Responsiveness nutzen)
+local fullNoClip    = false
+local groundLock    = false
+local exitBlockUntil= 0
 
-    local function forEachPart(vf, fn)
-        if not vf then return end
-        for _,p in ipairs(vf:GetDescendants()) do
-            if p:IsA("BasePart") then fn(p) end
-        end
+-- Flight controllers state
+local flight = { att = nil, lv = nil, ao = nil, pp = nil }
+
+local function getPrimaryPart(v)
+    return v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function buildFlightControllers(v)
+    local pp = getPrimaryPart(v); if not pp then return false end
+    flight.pp = pp
+
+    -- Attachment
+    flight.att = Instance.new("Attachment")
+    flight.att.Name = "Sorin_Fly_Att"
+    flight.att.Parent = pp
+
+    -- LinearVelocity (world space)
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "Sorin_Fly_LV"
+    lv.RelativeTo = Enum.ActuatorRelativeTo.World
+    lv.Attachment0 = flight.att
+    lv.MaxForce = math.huge
+    lv.VectorVelocity = Vector3.new()
+    lv.Parent = pp
+    flight.lv = lv
+
+    -- AlignOrientation (smooth facing)
+    local ao = Instance.new("AlignOrientation")
+    ao.Name = "Sorin_Fly_AO"
+    ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    ao.Attachment0 = flight.att
+    ao.Responsiveness = 35
+    ao.MaxTorque = math.huge
+    ao.RigidityEnabled = false
+    ao.Parent = pp
+    flight.ao = ao
+
+    return true
+end
+
+local function destroyFlightControllers()
+    if flight.lv then pcall(function() flight.lv.VectorVelocity = Vector3.new() end) end
+    for _,inst in ipairs({flight.ao, flight.lv, flight.att}) do
+        if inst and inst.Parent then inst:Destroy() end
     end
+    flight = { att = nil, lv = nil, ao = nil, pp = nil }
+end
 
-    local function zeroMotion(vf)
+local function forEachPart(vf, fn)
+    if not vf then return end
+    for _,p in ipairs(vf:GetDescendants()) do
+        if p:IsA("BasePart") then fn(p) end
+    end
+end
+
+local function zeroMotion(vf)
+    forEachPart(vf, function(bp)
+        bp.AssemblyLinearVelocity  = Vector3.new()
+        bp.AssemblyAngularVelocity = Vector3.new()
+    end)
+end
+
+local function applyFlyCollision(vf)
+    if not vf then return end
+    forEachPart(vf, function(bp)
+        if savedFlags[bp] then
+            bp.CanCollide = not fullNoClip
+        end
+    end)
+end
+
+-- geringe Bodenhaftung während Fly (Friction runter), sauber wiederherstellen
+local function lowFrictionProps()
+    -- density, friction, elasticity, frictionWeight, elasticityWeight
+    return PhysicalProperties.new(0.7, 0, 0, 1, 1)
+end
+
+local function setFlightPhysics(vf, on)
+    if not vf then return end
+    if on then
+        savedFlags = {}
         forEachPart(vf, function(bp)
+            savedFlags[bp] = {
+                Anchored = bp.Anchored,
+                CanCollide = bp.CanCollide,
+                Phys = bp.CustomPhysicalProperties,
+            }
+            bp.Anchored   = false                    -- IMPORTANT: never anchor in fly mode
+            bp.CanCollide = (not fullNoClip)
+            bp.CustomPhysicalProperties = lowFrictionProps()
             bp.AssemblyLinearVelocity  = Vector3.new()
             bp.AssemblyAngularVelocity = Vector3.new()
         end)
-    end
-
-    local function applyFlyCollision(vf)
-        if not vf then return end
-        forEachPart(vf, function(bp)
-            if savedFlags[bp] then
-                bp.CanCollide = not fullNoClip
-            end
-        end)
-    end
-
-    local function setFlightPhysics(vf, on)
-        if not vf then return end
-        if on then
-            savedFlags = {}
-            forEachPart(vf, function(bp)
-                savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
-                bp.Anchored   = false
-                bp.CanCollide = (not fullNoClip)
-                bp.AssemblyLinearVelocity  = Vector3.new()
+        applyFlyCollision(vf)
+    else
+        for bp,fl in pairs(savedFlags) do
+            if bp and bp.Parent then
+                bp.Anchored   = fl.Anchored
+                bp.CanCollide = fl.CanCollide
+                bp.CustomPhysicalProperties = fl.Phys
+                bp.AssemblyLinearVelocity  = Vector3.new(0,-10,0)
                 bp.AssemblyAngularVelocity = Vector3.new()
-            end)
-            applyFlyCollision(vf)
-        else
-            for bp,fl in pairs(savedFlags) do
-                if bp and bp.Parent then
-                    bp.Anchored   = fl.Anchored
-                    bp.CanCollide = fl.CanCollide
-                    bp.AssemblyLinearVelocity  = Vector3.new(0,-10,0)
-                    bp.AssemblyAngularVelocity = Vector3.new()
-                end
             end
-            savedFlags = {}
         end
+        savedFlags = {}
     end
+end
 
-    local function settleToGround(v)
-        if not v then return end
-        local cf = v:GetPivot()
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-        params.FilterDescendantsInstances = {v}
-        local hit = Workspace:Raycast(cf.Position, Vector3.new(0,-1000,0), params)
-        if hit then
-            pcall(function()
-                v:PivotTo(CFrame.new(hit.Position + Vector3.new(0,3,0),
-                                     hit.Position + Vector3.new(0,3,0) + Camera.CFrame.LookVector))
-            end)
-        else
-            pcall(function() v:PivotTo(cf + Vector3.new(0,-2,0)) end)
-        end
-        pcall(function() v:PivotTo(v:GetPivot() + Vector3.new(0,1.5,0)) end)
+local function settleToGround(v)
+    if not v then return end
+    local cf = v:GetPivot()
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = {v}
+    local hit = Workspace:Raycast(cf.Position, Vector3.new(0,-1000,0), params)
+    if hit then
+        pcall(function()
+            v:PivotTo(CFrame.new(hit.Position + Vector3.new(0,3,0),
+                                 hit.Position + Vector3.new(0,3,0) + Camera.CFrame.LookVector))
+        end)
+    else
+        pcall(function() v:PivotTo(cf + Vector3.new(0,-2,0)) end)
     end
+    pcall(function() v:PivotTo(v:GetPivot() + Vector3.new(0,1.5,0)) end)
+end
 
-    -- Exit-Blocker (global)
-    RunService.Heartbeat:Connect(function()
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if not hum then return end
-        if hum.SeatPart == nil and os.clock() < exitBlockUntil then
-            local _, seat = isSeatedInOwnVehicle()
-            if seat then sitIn(seat) end
-        end
-    end)
+-- Exit-Blocker (global)
+RunService.Heartbeat:Connect(function()
+    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if hum.SeatPart == nil and os.clock() < exitBlockUntil then
+        local _, seat = isSeatedInOwnVehicle()
+        if seat then sitIn(seat) end
+    end
+end)
 
-    local function toggleFly(state)
-        local now = os.clock()
-        if now - toggleLockTS < 0.08 then return end
-        toggleLockTS = now
+local function toggleFly(state)
+    local now = os.clock()
+    if now - toggleLockTS < 0.08 then return end
+    toggleLockTS = now
 
-        if state == nil then state = not flyEnabled end
-        if state and not isSeated() then
-            notify("Car Fly","Nur im Auto nutzbar.")
-            if flyToggleUI then flyToggleUI:Set(false) end
-            return
-        end
-        if state == flyEnabled then return end
+    if state == nil then state = not flyEnabled end
+    if state and not isSeated() then
+        notify("Car Fly","Nur im Auto nutzbar.")
+        if flyToggleUI then flyToggleUI:Set(false) end
+        return
+    end
+    if state == flyEnabled then return end
 
-        flyEnabled = state
-        _G.__Sorin_FlyActive = flyEnabled
-        if flyToggleUI then flyToggleUI:Set(flyEnabled) end
+    flyEnabled = state
+    _G.__Sorin_FlyActive = flyEnabled
+    if flyToggleUI then flyToggleUI:Set(flyEnabled) end
 
-        if flyConn then flyConn:Disconnect(); flyConn = nil end
-        local vf = myVehicleFolder()
-        if not vf then
-            flyEnabled = false; _G.__Sorin_FlyActive = false
-            if flyToggleUI then flyToggleUI:Set(false) end
-            notify("Car Fly","Kein Fahrzeug.")
-            return
-        end
-        ensurePrimaryPart(vf)
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+    local vf = myVehicleFolder()
+    if not vf then
+        flyEnabled = false; _G.__Sorin_FlyActive = false
+        if flyToggleUI then flyToggleUI:Set(false) end
+        notify("Car Fly","Kein Fahrzeug.")
+        return
+    end
+    ensurePrimaryPart(vf)
 
-        if not flyEnabled then
-            setFlightPhysics(vf, false)
-            settleToGround(vf)
-            exitBlockUntil = os.clock() + 2 -- NEU: block after fly off
-            notify("Car Fly","Deaktiviert.")
-            return
-        end
-
-        setFlightPhysics(vf, true)
-
-        local startCF = CFrame.lookAt(vf:GetPivot().Position, vf:GetPivot().Position + Camera.CFrame.LookVector)
-        pcall(function() vf:PivotTo(startCF) end)
-        lastAirCF = startCF
+    if not flyEnabled then
+        if flight.lv then flight.lv.VectorVelocity = Vector3.new() end
+        destroyFlightControllers()
+        setFlightPhysics(vf, false)
+        settleToGround(vf)
         exitBlockUntil = os.clock() + 2
-
-        notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
-
-        flyConn = RunService.RenderStepped:Connect(function(dt)
-            if not flyEnabled or groundLock then return end
-            if not isSeated() then toggleFly(false); return end
-
-            local v = myVehicleFolder(); if not v then return end
-            local root = v:GetPivot()
-
-            local targetCF = CFrame.lookAt(root.Position, root.Position + Camera.CFrame.LookVector)
-            local newCF    = root:Lerp(targetCF, math.clamp(ROT_LERP, 0, 1))
-
-            local dir = Vector3.zero
-            if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
-            if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
-
-            if dir.Magnitude > 0 then
-                dir = dir.Unit
-                local step  = dir * (flySpeed * dt)
-                local npos  = newCF.Position + step
-                newCF = CFrame.new(npos, npos + Camera.CFrame.LookVector)
-            end
-
-            pcall(function() vf:PivotTo(newCF) end)
-            lastAirCF = newCF
-        end)
-
-        task.spawn(function()
-            while flyEnabled do
-                if not safeFly then task.wait(0.25)
-                else
-                    task.wait(6)
-                    if not flyEnabled then break end
-                    local v = myVehicleFolder(); if not v then break end
-                    ensurePrimaryPart(v)
-                    local before = v:GetPivot()
-
-                    groundLock = true
-                    setFlightPhysics(v, false)
-                    settleToGround(v)
-                    zeroMotion(v)
-                    task.wait(0.5)
-                    if not flyEnabled then return end
-                    setFlightPhysics(v, true)
-                    pcall(function() v:PivotTo(before) end)
-                    lastAirCF = before
-                    groundLock = false
-                    exitBlockUntil = os.clock() + 2
-                end
-            end
-        end)
+        notify("Car Fly","Deaktiviert.")
+        return
     end
 
-    RunService.Heartbeat:Connect(function()
-        if flyEnabled and not isSeated() then
-            toggleFly(false)
+    setFlightPhysics(vf, true)
+
+    -- Build flight controllers (no anchors)
+    if not buildFlightControllers(vf) then
+        toggleFly(false)
+        notify("Car Fly","No primary part for controllers.")
+        return
+    end
+
+    -- Small vertical nudge to clear ground contact
+    do
+        local cf = vf:GetPivot()
+        pcall(function() vf:PivotTo(cf + Vector3.new(0, 2.5, 0)) end)
+    end
+
+    lastAirCF = vf:GetPivot()
+    exitBlockUntil = os.clock() + 2
+    notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
+
+    flyConn = RunService.RenderStepped:Connect(function(dt)
+        if not flyEnabled or groundLock then return end
+        if not isSeated() then toggleFly(false); return end
+
+        local v = myVehicleFolder(); if not v then return end
+        if not (flight.pp and flight.lv and flight.ao) then return end
+
+        -- Smoothly face the camera (orientation only)
+        flight.ao.CFrame = Camera.CFrame.Rotation
+
+        -- Input -> world velocity
+        local dir = Vector3.zero
+        if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
+        if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+        if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+
+        -- Ground clearance assistance (prevents sticky lift-off)
+        do
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Blacklist
+            params.FilterDescendantsInstances = {v}
+            local pivot = v:GetPivot()
+            local hit = Workspace:Raycast(pivot.Position, Vector3.new(0,-5,0), params)
+            if hit then
+                if not (UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl)) then
+                    dir = dir + Vector3.new(0, 0.35, 0)
+                end
+            end
+        end
+
+        local vel = Vector3.new()
+        if dir.Magnitude > 0 then
+            vel = dir.Unit * flySpeed
+        end
+        flight.lv.VectorVelocity = vel
+
+        lastAirCF = v:GetPivot()
+    end)
+
+    -- SafeFly tick (no PivotTo restore)
+    task.spawn(function()
+        while flyEnabled do
+            if not safeFly then task.wait(0.25)
+            else
+                task.wait(6)
+                if not flyEnabled then break end
+                local v = myVehicleFolder(); if not v then break end
+                ensurePrimaryPart(v)
+
+                groundLock = true
+                if flight.lv then flight.lv.VectorVelocity = Vector3.new() end
+
+                -- temporarily restore physics, settle, then resume
+                setFlightPhysics(v, false)
+                settleToGround(v)
+                zeroMotion(v)
+                task.wait(0.5)
+                if not flyEnabled then return end
+                setFlightPhysics(v, true)
+
+                if not (flight.pp and flight.lv and flight.ao) then
+                    buildFlightControllers(v)
+                end
+
+                lastAirCF = v:GetPivot()
+                groundLock = false
+                exitBlockUntil = os.clock() + 2
+            end
         end
     end)
+end
+
+-- Auto-off if player exits the seat
+RunService.Heartbeat:Connect(function()
+    if flyEnabled and not isSeated() then
+        toggleFly(false)
+    end
+end)
+
 
     ------------------------------ Mobile Fly Panel ------------------------------
     local function spawnMobileFly()
