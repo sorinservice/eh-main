@@ -1,16 +1,7 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    print("Version 3.2 after 2 ban DEV (Fly=PowerDrive, impulse-only)")
-
-    ---------------------------------------------------------------
-    -- Vehicle Mod (SorinHub)
-    -- - To Vehicle / Bring Vehicle
-    -- - License Plate (local & persistent)
-    -- - Car Fly (impulse-based; server-visible), SafeFly
-    -- - Mobile Fly Panel (draggable)
-    ---------------------------------------------------------------
-
-    ------------------------------ Services / locals ------------------------------
+    print("Version 3.3, keine Schwebekraft mehr zum Fliegen")
+    ------------------------------ services ------------------------------
     local Players     = game:GetService("Players")
     local RunService  = game:GetService("RunService")
     local UserInput   = game:GetService("UserInputService")
@@ -20,30 +11,24 @@ return function(tab, OrionLib)
     local LP     = Players.LocalPlayer
     local Camera = Workspace.CurrentCamera
 
-    local function notify(title, msg, t)
-        OrionLib:MakeNotification({Name = title, Content = msg, Time = t or 3})
+    local function notify(t, m, s)
+        OrionLib:MakeNotification({Name=t, Content=m, Time=s or 3})
     end
 
-    ------------------------------ Persistenz (Kennzeichen) ------------------------------
+    ------------------------------ persist (plate) ------------------------------
     local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
     local SAVE_FILE   = SAVE_FOLDER .. "/vehicle.json"
 
-    local function read_json(path)
+    local function read_json(p)
         local ok, res = pcall(function()
-            if isfile and isfile(path) then
-                return HttpService:JSONDecode(readfile(path))
-            end
+            if isfile and isfile(p) then return HttpService:JSONDecode(readfile(p)) end
         end)
         return ok and res or nil
     end
-    local function write_json(path, tbl)
+    local function write_json(p, tbl)
         pcall(function()
-            if makefolder and not isfolder(SAVE_FOLDER) then
-                makefolder(SAVE_FOLDER)
-            end
-            if writefile then
-                writefile(path, HttpService:JSONEncode(tbl))
-            end
+            if makefolder and not isfolder(SAVE_FOLDER) then makefolder(SAVE_FOLDER) end
+            if writefile then writefile(p, HttpService:JSONEncode(tbl)) end
         end)
     end
 
@@ -54,11 +39,9 @@ return function(tab, OrionLib)
             CFG.plateText = saved.plateText
         end
     end
-    local function save_cfg()
-        write_json(SAVE_FILE, { plateText = CFG.plateText })
-    end
+    local function save_cfg() write_json(SAVE_FILE, { plateText = CFG.plateText }) end
 
-    ------------------------------ Vehicle helpers ------------------------------
+    ------------------------------ helpers ------------------------------
     local function VehiclesFolder()
         return Workspace:FindFirstChild("Vehicles") or Workspace
     end
@@ -182,11 +165,10 @@ return function(tab, OrionLib)
         return seat.Occupant == hum
     end
 
-    ------------------------------ License Plate (local) ------------------------------
+    ------------------------------ license plate ------------------------------
     local function applyPlateTextTo(vf, txt)
         if not (vf and txt and txt ~= "") then return end
         local lpRoot = vf:FindFirstChild("LicensePlates", true) or vf:FindFirstChild("LicencePlates", true)
-
         local function setLabel(container)
             if not container then return end
             local gui = container:FindFirstChild("Gui", true)
@@ -194,15 +176,12 @@ return function(tab, OrionLib)
                 pcall(function() gui.TextLabel.Text = txt end)
             end
         end
-
         if lpRoot then
             setLabel(lpRoot:FindFirstChild("Back", true))
             setLabel(lpRoot:FindFirstChild("Front", true))
         else
             for _,d in ipairs(vf:GetDescendants()) do
-                if d:IsA("TextLabel") then
-                    pcall(function() d.Text = txt end)
-                end
+                if d:IsA("TextLabel") then pcall(function() d.Text = txt end) end
             end
         end
     end
@@ -224,7 +203,7 @@ return function(tab, OrionLib)
         end)
     end)
 
-    ------------------------------ To / Bring Vehicle ------------------------------
+    ------------------------------ to/bring ------------------------------
     local WARN_DISTANCE = 300
     local TO_OFFSET     = CFrame.new(-2.0, 0.5, 0)
     local BRING_AHEAD   = 10
@@ -232,17 +211,13 @@ return function(tab, OrionLib)
 
     local function toVehicle()
         if isSeatedInOwnVehicle() then notify("Vehicle","Du sitzt bereits im Fahrzeug."); return end
-        if _G.__Sorin_FlyActive then notify("Vehicle","Car Fly aktiv – bitte zuerst deaktivieren."); return end
-
         local vf = myVehicleFolder(); if not vf then notify("Vehicle","Kein eigenes Fahrzeug gefunden."); return end
         local seat = findDriveSeat(vf); if not seat then notify("Vehicle","Kein Fahrersitz gefunden."); return end
-
         local hrp = (LP.Character or LP.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
         local dist = (hrp.Position - seat.Position).Magnitude
         if dist > WARN_DISTANCE then
             notify("Vehicle", ("Achtung: weit entfernt (~%d studs)."):format(math.floor(dist)), 3)
         end
-
         hrp.CFrame = seat.CFrame * TO_OFFSET
         task.wait(0.06)
         sitIn(seat)
@@ -250,387 +225,120 @@ return function(tab, OrionLib)
 
     local function bringVehicle()
         if isSeatedInOwnVehicle() then notify("Vehicle","Schon im Fahrzeug – Bring gesperrt."); return end
-        if _G.__Sorin_FlyActive then notify("Vehicle","Car Fly aktiv – bitte zuerst deaktivieren."); return end
-
         local vf = myVehicleFolder(); if not vf then notify("Vehicle","Kein Fahrzeug gefunden."); return end
         ensurePrimaryPart(vf)
-
         local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then notify("Vehicle","Kein HRP."); return end
-
         local look = hrp.CFrame.LookVector
         local pos  = hrp.Position + look * BRING_AHEAD + Vector3.new(0, BRING_UP, 0)
         local cf   = CFrame.lookAt(pos, pos + look)
         pcall(function() vf:PivotTo(cf) end)
-
         task.wait(0.05)
         local seat = findDriveSeat(vf)
         if seat then sitIn(seat) end
     end
 
-    -- === Car Fly (impulse-based; server-visible) ===========================
-    local flyEnabled    = false
-    local flySpeed      = 130
-    local safeFly       = false
-    local flyConn       = nil
-    local flyToggleUI   = nil
-    local savedFlags    = {}
-    local lastAirCF     = nil
-    local toggleLockTS  = 0
-    local fullNoClip    = false
-    local groundLock    = false
-    local exitBlockUntil= 0
+    ----------------------------------------------------------------------
+    -- POWERDRIVE (boden-only Schub; keine Velocity-Writes; keine Hover)
+    ----------------------------------------------------------------------
+    local PD = {
+        enabled=false, conn=nil,
+        pp=nil, att=nil, vf=nil,
+        accel=55,           -- studs/s^2  (per Slider)
+        speedCap=85,        -- studs/s    (per Slider)
+        traction=0.12       -- leichter Querdrag
+    }
 
-    -- Tuning
-    local A_MAX            = 60       -- max Δv/dt [stud/s^2]
-    local CLIMB_MAX        = 40       -- max vertical target speed
-    local JERK_SMOOTH      = 0.15     -- velocity lerp factor
-    local GROUND_PROBE     = 5        -- near-ground probe
-    local LIFTOFF_NUDGE    = 2.5      -- initial lift
-    local Y_BIAS_NEAR_GND  = 0.35     -- slight upward bias near ground
-    local YAW_K            = 2.0      -- yaw coefficient
-    local YAW_CLAMP        = 0.25     -- max yaw correction per tick (rad)
-
-    local function forEachPart(vf, fn)
-        if not vf then return end
-        for _,p in ipairs(vf:GetDescendants()) do
-            if p:IsA("BasePart") then fn(p) end
-        end
+    local function pd_destroy()
+        if PD.conn then PD.conn:Disconnect() PD.conn=nil end
+        if PD.vf then PD.vf.Force = Vector3.new() end
+        for _,x in ipairs({PD.vf, PD.att}) do if x and x.Parent then x:Destroy() end end
+        PD.pp, PD.vf, PD.att = nil,nil,nil
+        PD.enabled=false
     end
 
-    local function zeroMotion(vf)
-        forEachPart(vf, function(bp)
-            bp.AssemblyLinearVelocity  = Vector3.new()
-            bp.AssemblyAngularVelocity = Vector3.new()
-        end)
+    local function pd_build(v)
+        ensurePrimaryPart(v)
+        local pp = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
+        if not pp then return false end
+        PD.pp = pp
+        PD.att = Instance.new("Attachment"); PD.att.Name="Sorin_PD_Att"; PD.att.Parent=pp
+        PD.vf  = Instance.new("VectorForce"); PD.vf.Name="Sorin_PD_VF"
+        PD.vf.Attachment0 = PD.att
+        PD.vf.RelativeTo  = Enum.ActuatorRelativeTo.World
+        PD.vf.Force = Vector3.new()
+        PD.vf.Parent = pp
+        return true
     end
 
-    local function applyFlyCollision(vf)
-        if not vf then return end
-        forEachPart(vf, function(bp)
-            bp.CanCollide = not fullNoClip
-        end)
+    local function projOnPlane(v, n)
+        if n.Magnitude == 0 then return v end
+        local u = n.Unit
+        return v - u * v:Dot(u)
     end
 
-    local function setFlightPhysics(vf, on)
-        if not vf then return end
-        if on then
-            savedFlags = {}
-            forEachPart(vf, function(bp)
-                savedFlags[bp] = { Anchored = bp.Anchored, CanCollide = bp.CanCollide }
-                bp.Anchored   = false
-                bp.AssemblyLinearVelocity  = Vector3.new()
-                bp.AssemblyAngularVelocity = Vector3.new()
-            end)
-            applyFlyCollision(vf)
-        else
-            for bp,fl in pairs(savedFlags) do
-                if bp and bp.Parent then
-                    bp.Anchored   = fl.Anchored
-                    bp.CanCollide = fl.CanCollide
-                    bp.AssemblyLinearVelocity  = Vector3.new(0,-10,0)
-                    bp.AssemblyAngularVelocity = Vector3.new()
-                end
-            end
-            savedFlags = {}
-        end
-    end
+    local function pd_toggle(state)
+        if state == nil then state = not PD.enabled end
+        if state == PD.enabled then return end
+        if state and not isSeated() then notify("PowerDrive","Nur im Auto."); return end
 
-    local function settleToGround(v)
-        if not v then return end
-        local cf = v:GetPivot()
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-        params.FilterDescendantsInstances = {v}
-        local hit = Workspace:Raycast(cf.Position, Vector3.new(0,-1000,0), params)
-        if hit then
-            pcall(function()
-                v:PivotTo(CFrame.new(hit.Position + Vector3.new(0,3,0),
-                                     hit.Position + Vector3.new(0,3,0) + Camera.CFrame.LookVector))
-            end)
-        else
-            pcall(function() v:PivotTo(cf + Vector3.new(0,-2,0)) end)
-        end
-        pcall(function() v:PivotTo(v:GetPivot() + Vector3.new(0,1.5,0)) end)
-    end
-
-    RunService.Heartbeat:Connect(function()
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if not hum then return end
-        if hum.SeatPart == nil and os.clock() < exitBlockUntil then
-            local _, seat = isSeatedInOwnVehicle()
-            if seat then sitIn(seat) end
-        end
-    end)
-
-    local function signedYawError(forward, desired)
-        local f = Vector3.new(forward.X, 0, forward.Z)
-        if f.Magnitude == 0 then return 0 end
-        local d = Vector3.new(desired.X, 0, desired.Z)
-        if d.Magnitude == 0 then return 0 end
-        f = f.Unit; d = d.Unit
-        local crossY = (f:Cross(d)).Y
-        local dot    = math.clamp(f:Dot(d), -1, 1)
-        local ang    = math.acos(dot)
-        return math.clamp(ang * (crossY >= 0 and 1 or -1), -YAW_CLAMP, YAW_CLAMP)
-    end
-
-    local function clampVecLength(v, maxLen)
-        local m = v.Magnitude
-        if m <= maxLen then return v end
-        return v * (maxLen / math.max(m, 1e-9))
-    end
-
-    local function toggleFly(state)
-        local now = os.clock()
-        if now - toggleLockTS < 0.08 then return end
-        toggleLockTS = now
-
-        if state == nil then state = not flyEnabled end
-        if state and not isSeated() then
-            notify("Car Fly","Nur im Auto nutzbar.")
-            if flyToggleUI then flyToggleUI:Set(false) end
-            return
-        end
-        if state == flyEnabled then return end
-
-        flyEnabled = state
-        _G.__Sorin_FlyActive = flyEnabled
-        if flyToggleUI then flyToggleUI:Set(flyEnabled) end
-
-        if flyConn then flyConn:Disconnect(); flyConn = nil end
-        local vf = myVehicleFolder()
-        if not vf then
-            flyEnabled = false; _G.__Sorin_FlyActive = false
-            if flyToggleUI then flyToggleUI:Set(false) end
-            notify("Car Fly","Kein Fahrzeug.")
-            return
-        end
-        ensurePrimaryPart(vf)
-        local pp = vf.PrimaryPart or vf:FindFirstChildWhichIsA("BasePart", true)
-        if not pp then
-            flyEnabled = false; _G.__Sorin_FlyActive = false
-            if flyToggleUI then flyToggleUI:Set(false) end
-            notify("Car Fly","Kein PrimaryPart.")
+        if not state then
+            pd_destroy()
+            notify("PowerDrive","Off")
             return
         end
 
-        if not flyEnabled then
-            setFlightPhysics(vf, false)
-            settleToGround(vf)
-            exitBlockUntil = os.clock() + 2
-            notify("Car Fly","Deaktiviert.")
-            return
-        end
+        local vf = myVehicleFolder(); if not vf then notify("PowerDrive","Kein Fahrzeug."); return end
+        if not pd_build(vf) then notify("PowerDrive","Kein PrimaryPart."); return end
+        PD.enabled = true
+        notify("PowerDrive","On")
 
-        setFlightPhysics(vf, true)
+        PD.conn = RunService.RenderStepped:Connect(function(dt)
+            if not PD.enabled then return end
+            if not isSeated() then pd_toggle(false) return end
+            local v = myVehicleFolder(); if not v then pd_toggle(false) return end
+            if not (PD.pp and PD.pp.Parent) then pd_toggle(false) return end
 
-        do
-            local cf = vf:GetPivot()
-            pcall(function() vf:PivotTo(cf + Vector3.new(0, LIFTOFF_NUDGE, 0)) end)
-        end
-
-        lastAirCF = vf:GetPivot()
-        exitBlockUntil = os.clock() + 2
-        notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
-
-        local smoothed = Vector3.new()
-
-        flyConn = RunService.RenderStepped:Connect(function(dt)
-            if not flyEnabled or groundLock then return end
-            if not isSeated() then toggleFly(false); return end
-
-            local v = myVehicleFolder(); if not v then return end
-            local rootCF = v:GetPivot()
-            local ppNow  = v.PrimaryPart or pp
-            if not ppNow then return end
-
-            local upKey   = UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space)
-            local downKey = UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl)
-
-            local dir = Vector3.zero
-            if UserInput:IsKeyDown(Enum.KeyCode.W) then dir = dir + Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) then dir = dir - Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.D) then dir = dir + Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.A) then dir = dir - Camera.CFrame.RightVector end
-            if upKey   then dir = dir + Vector3.new(0,1,0) end
-            if downKey then dir = dir - Vector3.new(0,1,0) end
-
-            do
-                local params = RaycastParams.new()
-                params.FilterType = Enum.RaycastFilterType.Blacklist
-                params.FilterDescendantsInstances = {v}
-                local hit = Workspace:Raycast(rootCF.Position, Vector3.new(0,-GROUND_PROBE,0), params)
-                if hit and not downKey then
-                    dir = dir + Vector3.new(0, Y_BIAS_NEAR_GND, 0)
-                end
+            -- Bodencheck
+            local pivot = v:GetPivot()
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Blacklist
+            params.FilterDescendantsInstances = {v}
+            local hit = Workspace:Raycast(pivot.Position, Vector3.new(0,-8,0), params)
+            if not hit then
+                PD.vf.Force = Vector3.new()
+                return
             end
 
-            local target = (dir.Magnitude > 0) and (dir.Unit * flySpeed) or Vector3.new()
-            if target.Y >  CLIMB_MAX then target = Vector3.new(target.X,  CLIMB_MAX, target.Z) end
-            if target.Y < -CLIMB_MAX then target = Vector3.new(target.X, -CLIMB_MAX, target.Z) end
-            smoothed = smoothed:Lerp(target, JERK_SMOOTH)
+            -- Input (nur XZ)
+            local t = 0
+            if UserInput:IsKeyDown(Enum.KeyCode.W) then t = t + 1 end
+            if UserInput:IsKeyDown(Enum.KeyCode.S) then t = t - 1 end
 
-            do
-                local mass = math.max(ppNow.AssemblyMass, 1)
-                local g    = Workspace.Gravity
-                local support = downKey and 0.35 or 1.0
-                ppNow:ApplyImpulse(Vector3.new(0, mass * g * dt * support, 0))
+            local fwd = PD.pp.CFrame.LookVector
+            fwd = projOnPlane(fwd, hit.Normal)
+            if fwd.Magnitude > 0 then fwd = fwd.Unit end
+
+            local desired_a = fwd * (t * PD.accel)  -- studs/s^2
+            local mass      = math.max(PD.pp.AssemblyMass, 1)
+
+            -- Speed-Cap in Fahr­ebene
+            local vel   = PD.pp.AssemblyLinearVelocity
+            local vPlan = projOnPlane(vel, hit.Normal)
+            if vPlan.Magnitude > PD.speedCap and (t * vPlan:Dot(fwd)) > 0 then
+                desired_a = Vector3.new() -- über Cap: kein extra Schub in Fahrtrichtung
             end
 
-            do
-                local curVel = ppNow.AssemblyLinearVelocity
-                local dv     = smoothed - curVel
-                local dvCap  = clampVecLength(dv, A_MAX * math.max(dt, 1/240))
-                if dvCap.Magnitude > 1e-5 then
-                    local mass = math.max(ppNow.AssemblyMass, 1)
-                    ppNow:ApplyImpulse(dvCap * mass)
-                end
-            end
+            -- leichter Querdrag (sanftere Kontrolle, wirkt nur in Ebene)
+            local lateral = vPlan - fwd * vPlan:Dot(fwd)
+            local dragF   = -lateral * (PD.traction * mass)
 
-            do
-                local desiredF = Camera.CFrame.LookVector
-                local yawErr   = signedYawError(rootCF.LookVector, desiredF)
-                if math.abs(yawErr) > 1e-3 then
-                    local mass = math.max(ppNow.AssemblyMass, 1)
-                    ppNow:ApplyAngularImpulse(Vector3.new(0, yawErr * YAW_K * mass, 0))
-                end
-            end
-
-            lastAirCF = v:GetPivot()
-        end)
-
-        task.spawn(function()
-            while flyEnabled do
-                if not safeFly then task.wait(0.25)
-                else
-                    task.wait(6)
-                    if not flyEnabled then break end
-                    local v = myVehicleFolder(); if not v then break end
-                    ensurePrimaryPart(v)
-                    local ppNow = v.PrimaryPart or pp; if not ppNow then break end
-
-                    groundLock = true
-                    ppNow:ApplyImpulse(-ppNow.AssemblyLinearVelocity * math.max(ppNow.AssemblyMass,1))
-                    zeroMotion(v)
-                    setFlightPhysics(v, false)
-                    settleToGround(v)
-                    task.wait(0.5)
-                    if not flyEnabled then return end
-                    setFlightPhysics(v, true)
-
-                    lastAirCF = v:GetPivot()
-                    groundLock = false
-                    exitBlockUntil = os.clock() + 2
-                end
-            end
+            -- finale Kraft
+            PD.vf.Force = desired_a * mass + dragF
         end)
     end
 
-    RunService.Heartbeat:Connect(function()
-        if flyEnabled and not isSeated() then
-            toggleFly(false)
-        end
-    end)
-
-    ------------------------------ Mobile Fly Panel ------------------------------
-    local function spawnMobileFly()
-        local gui = Instance.new("ScreenGui")
-        gui.Name = "Sorin_MobileFly"
-        gui.ResetOnSpawn = false
-        gui.IgnoreGuiInset = true
-        gui.Enabled = false
-        gui.Parent = game:GetService("CoreGui")
-
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.fromOffset(230, 160)
-        frame.Position = UDim2.fromOffset(40, 300)
-        frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
-        frame.Parent = gui
-        Instance.new("UICorner", frame).CornerRadius = UDim.new(0,12)
-
-        local title = Instance.new("TextLabel")
-        title.Size = UDim2.new(1, -10, 0, 22)
-        title.Position = UDim2.fromOffset(10, 6)
-        title.BackgroundTransparency = 1
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 14
-        title.TextColor3 = Color3.fromRGB(240,240,240)
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.Text = "Car Fly"
-        title.Parent = frame
-
-        local hold = {F=false,B=false,L=false,R=false,U=false,D=false}
-        local function mkBtn(txt, x, y, w, h, key)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.fromOffset(w,h); b.Position = UDim2.fromOffset(x,y)
-            b.Text = txt; b.BackgroundColor3 = Color3.fromRGB(40,40,40)
-            b.TextColor3 = Color3.fromRGB(230,230,230); b.Font = Enum.Font.GothamSemibold; b.TextSize = 14
-            b.Parent = frame; Instance.new("UICorner", b).CornerRadius = UDim.new(0,8)
-            b.MouseButton1Down:Connect(function()
-                if not isSeated() then notify("Car Fly","Nur im Auto."); return end
-                hold[key] = true
-            end)
-            b.MouseButton1Up:Connect(function() hold[key] = false end)
-            b.MouseLeave:Connect(function() hold[key] = false end)
-            b.TouchLongPress:Connect(function(_, state)
-                if state == Enum.UserInputState.Begin then hold[key] = true else hold[key] = false end
-            end)
-            return b
-        end
-
-        mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(function()
-            if not isSeated() then notify("Car Fly","Nur im Auto."); return end
-            toggleFly()
-        end)
-        mkBtn("^",      85, 34, 60, 28, "F")
-        mkBtn("v",      85,100, 60, 28, "B")
-        mkBtn("<<",     15, 67, 60, 28, "L")
-        mkBtn(">>",     155,67, 60, 28, "R")
-        mkBtn("Up",     155,34, 60, 28, "U")
-        mkBtn("Down",   155,100,60, 28, "D")
-
-        local dragging, start, startPos
-        frame.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true; start = input.Position; startPos = frame.Position
-                input.Changed:Connect(function()
-                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
-                end)
-            end
-        end)
-        UserInput.InputChanged:Connect(function(input)
-            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-                local d = input.Position - start
-                frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-
-        RunService.RenderStepped:Connect(function(dt)
-            if not gui.Enabled or not flyEnabled or groundLock then return end
-            if not isSeated() then return end
-            local v = myVehicleFolder(); if not v then return end
-
-            local cf = v:GetPivot()
-            local move = Vector3.zero
-            if hold.F then move = move + Camera.CFrame.LookVector end
-            if hold.B then move = move - Camera.CFrame.LookVector end
-            if hold.R then move = move + Camera.CFrame.RightVector end
-            if hold.L then move = move - Camera.CFrame.RightVector end
-            if hold.U then move = move + Vector3.new(0,1,0) end
-            if hold.D then move = move - Vector3.new(0,1,0) end
-
-            if move.Magnitude > 0 then
-                move = move.Unit * (flySpeed * dt)
-                v:PivotTo(CFrame.new(cf.Position + move, (cf.Position + move) + Camera.CFrame.LookVector))
-            end
-        end)
-
-        return gui
-    end
-    local MobileFlyGui = spawnMobileFly()
-
-    ------------------------------ UI (Orion) ------------------------------
+    ------------------------------ UI ------------------------------
     local secV  = tab:AddSection({ Name = "Vehicle" })
     secV:AddButton({ Name = "To Vehicle (auf Sitz & einsteigen)", Callback = toVehicle })
     secV:AddButton({ Name = "Bring Vehicle (vor dich & einsteigen)", Callback = bringVehicle })
@@ -638,57 +346,37 @@ return function(tab, OrionLib)
         Name = "Kennzeichen-Text",
         Default = CFG.plateText,
         TextDisappear = false,
-        Callback = function(txt)
-            CFG.plateText = tostring(txt or "")
-            save_cfg()
-        end
+        Callback = function(txt) CFG.plateText = tostring(txt or ""); save_cfg() end
     })
     secV:AddButton({ Name = "Kennzeichen anwenden (aktuelles Fahrzeug)", Callback = applyPlateToCurrent })
 
-    local secF  = tab:AddSection({ Name = "Car Fly" })
-    flyToggleUI = secF:AddToggle({
-        Name = "Enable Car Fly (nur im Auto)",
+    local secPD = tab:AddSection({ Name = "PowerDrive (Boden-Boost)" })
+    secPD:AddToggle({
+        Name = "PowerDrive aktivieren",
         Default = false,
-        Callback = function(v) toggleFly(v) end
+        Callback = function(v) pd_toggle(v) end
     })
-    secF:AddBind({
-        Name = "Car Fly Toggle Key",
-        Default = Enum.KeyCode.X,
-        Hold = false,
-        Callback = function() toggleFly() end
+    secPD:AddSlider({
+        Name = "Beschleunigung (stud/s^2)",
+        Min = 20, Max = 150, Increment = 5,
+        Default = PD.accel,
+        Callback = function(val) PD.accel = math.floor(val) end
     })
-    secF:AddSlider({
-        Name = "Fly Speed",
-        Min = 10, Max = 190, Increment = 5,
-        Default = 130,
-        Callback = function(v) flySpeed = math.floor(v) end
+    secPD:AddSlider({
+        Name = "Speed-Cap (stud/s)",
+        Min = 30, Max = 200, Increment = 5,
+        Default = PD.speedCap,
+        Callback = function(val) PD.speedCap = math.floor(val) end
     })
-    secF:AddToggle({
-        Name = "Safe Fly (alle 6s Boden-Lock, 0.5s)",
-        Default = false,
-        Callback = function(v) safeFly = v end
-    })
-    secF:AddToggle({
-        Name = "Full Vehicle NoClip (immer durch alles)",
-        Default = false,
-        Callback = function(v)
-            fullNoClip = v
-            if flyEnabled then
-                local vf = myVehicleFolder()
-                applyFlyCollision(vf)
-            end
-        end
-    })
-    secF:AddToggle({
-        Name = "Mobile Fly Panel anzeigen",
-        Default = false,
-        Callback = function(v) if MobileFlyGui then MobileFlyGui.Enabled = v end end
+    secPD:AddSlider({
+        Name = "Traction (Quer-Dämpfung)",
+        Min = 0, Max = 0.5, Increment = 0.01,
+        Default = PD.traction,
+        Callback = function(val) PD.traction = tonumber(val) or PD.traction end
     })
 
-    task.defer(function()
-        if CFG.plateText ~= "" then
-            task.wait(1.0)
-            pcall(applyPlateToCurrent)
-        end
+    -- Safety: disable PD when you leave the seat
+    RunService.Heartbeat:Connect(function()
+        if PD.enabled and not isSeated() then pd_toggle(false) end
     end)
 end
