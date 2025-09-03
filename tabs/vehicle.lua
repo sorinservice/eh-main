@@ -1,6 +1,6 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    print("Leck eier")
+    print("Version2 DEV")
     ---------------------------------------------------------------
     -- Vehicle Mod (SorinHub)
     -- - To Vehicle / Bring Vehicle
@@ -61,7 +61,7 @@ return function(tab, OrionLib)
 
     ------------------------------ Vehicle helpers ------------------------------
     local function VehiclesFolder()
-        return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
+        return Workspace:FindFirstChild("Vehicles") or Workspace
     end
 
     local function myVehicleFolder()
@@ -212,9 +212,6 @@ return function(tab, OrionLib)
         local vf = myVehicleFolder()
         if vf and CFG.plateText ~= "" then
             applyPlateTextTo(vf, CFG.plateText)
-            notify("Vehicle","Kennzeichen angewandt (lokal).",2)
-        else
-            notify("Vehicle","Kein Fahrzeug / leerer Text.",2)
         end
     end
 
@@ -315,7 +312,7 @@ return function(tab, OrionLib)
             savedFlags = {}
             forEachPart(vf, function(bp)
                 savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
-                bp.Anchored   = true
+                bp.Anchored   = false
                 bp.CanCollide = (not fullNoClip)
                 bp.AssemblyLinearVelocity  = Vector3.new()
                 bp.AssemblyAngularVelocity = Vector3.new()
