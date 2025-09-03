@@ -1,6 +1,7 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    print("Version 3.3, keine Schwebekraft mehr zum Fliegen")
+    print("Version 3.4 — PowerDrive persists + AirFly (forces, no anchors/vel writes)")
+
     ------------------------------ services ------------------------------
     local Players     = game:GetService("Players")
     local RunService  = game:GetService("RunService")
@@ -203,6 +204,14 @@ return function(tab, OrionLib)
         end)
     end)
 
+    -- zusätzlich: beim Join nach kurzer Zeit auf aktuelles Fahrzeug anwenden
+    task.defer(function()
+        if CFG.plateText ~= "" then
+            task.wait(1.0)
+            pcall(applyPlateToCurrent)
+        end
+    end)
+
     ------------------------------ to/bring ------------------------------
     local WARN_DISTANCE = 300
     local TO_OFFSET     = CFrame.new(-2.0, 0.5, 0)
@@ -239,21 +248,19 @@ return function(tab, OrionLib)
     end
 
     ----------------------------------------------------------------------
-    -- POWERDRIVE (boden-only Schub; keine Velocity-Writes; keine Hover)
+    -- POWERDRIVE (boden-only Schub; persistiert über Sitzwechsel)
     ----------------------------------------------------------------------
     local PD = {
-        enabled=false, conn=nil,
-        pp=nil, att=nil, vf=nil,
-        accel=55,           -- studs/s^2  (per Slider)
-        speedCap=85,        -- studs/s    (per Slider)
-        traction=0.12       -- leichter Querdrag
+        wanted=false, enabled=false, conn=nil, vf=nil, att=nil, pp=nil,
+        accel=55,           -- studs/s^2 (UI)
+        speedCap=120        -- feste Obergrenze, kein Slider (sicherer)
     }
 
-    local function pd_destroy()
+    local function pd_teardown()
         if PD.conn then PD.conn:Disconnect() PD.conn=nil end
         if PD.vf then PD.vf.Force = Vector3.new() end
         for _,x in ipairs({PD.vf, PD.att}) do if x and x.Parent then x:Destroy() end end
-        PD.pp, PD.vf, PD.att = nil,nil,nil
+        PD.vf, PD.att, PD.pp = nil, nil, nil
         PD.enabled=false
     end
 
@@ -268,6 +275,7 @@ return function(tab, OrionLib)
         PD.vf.RelativeTo  = Enum.ActuatorRelativeTo.World
         PD.vf.Force = Vector3.new()
         PD.vf.Parent = pp
+        PD.enabled = true
         return true
     end
 
@@ -277,65 +285,260 @@ return function(tab, OrionLib)
         return v - u * v:Dot(u)
     end
 
-    local function pd_toggle(state)
-        if state == nil then state = not PD.enabled end
-        if state == PD.enabled then return end
-        if state and not isSeated() then notify("PowerDrive","Nur im Auto."); return end
-
-        if not state then
-            pd_destroy()
+    local function pd_setWanted(on)
+        PD.wanted = on and true or false
+        if not PD.wanted then
+            pd_teardown()
             notify("PowerDrive","Off")
             return
         end
+        -- exklusiv zu AirFly
+        _G.__Sorin_AirFlyWanted = false
+        if AirFly and AirFly.setWanted then AirFly.setWanted(false) end
 
-        local vf = myVehicleFolder(); if not vf then notify("PowerDrive","Kein Fahrzeug."); return end
-        if not pd_build(vf) then notify("PowerDrive","Kein PrimaryPart."); return end
-        PD.enabled = true
-        notify("PowerDrive","On")
+        if isSeated() then
+            local v = myVehicleFolder(); if not v then notify("PowerDrive","Kein Fahrzeug."); return end
+            if pd_build(v) then notify("PowerDrive","On") end
+        else
+            notify("PowerDrive","Armed (aktiviert bei Einstieg)")
+        end
+    end
 
-        PD.conn = RunService.RenderStepped:Connect(function(dt)
-            if not PD.enabled then return end
-            if not isSeated() then pd_toggle(false) return end
-            local v = myVehicleFolder(); if not v then pd_toggle(false) return end
-            if not (PD.pp and PD.pp.Parent) then pd_toggle(false) return end
+    -- Lauf-Update
+    local function pd_step(dt)
+        if not PD.enabled then return end
+        if not isSeated() then pd_teardown(); return end
+        local v = myVehicleFolder(); if not v then pd_teardown(); return end
+        if not (PD.pp and PD.pp.Parent) then pd_teardown(); return end
 
-            -- Bodencheck
-            local pivot = v:GetPivot()
-            local params = RaycastParams.new()
-            params.FilterType = Enum.RaycastFilterType.Blacklist
-            params.FilterDescendantsInstances = {v}
-            local hit = Workspace:Raycast(pivot.Position, Vector3.new(0,-8,0), params)
-            if not hit then
-                PD.vf.Force = Vector3.new()
+        -- Bodenkontakt prüfen
+        local pivot = v:GetPivot()
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        params.FilterDescendantsInstances = {v}
+        local hit = Workspace:Raycast(pivot.Position, Vector3.new(0,-8,0), params)
+        if not hit then
+            PD.vf.Force = Vector3.new()
+            return
+        end
+
+        -- Input (nur vor/zurück)
+        local t = 0
+        if UserInput:IsKeyDown(Enum.KeyCode.W) then t = t + 1 end
+        if UserInput:IsKeyDown(Enum.KeyCode.S) then t = t - 1 end
+
+        local fwd = PD.pp.CFrame.LookVector
+        fwd = projOnPlane(fwd, hit.Normal)
+        if fwd.Magnitude > 0 then fwd = fwd.Unit end
+
+        local mass = math.max(PD.pp.AssemblyMass, 1)
+        local desired_a = fwd * (t * PD.accel)  -- studs/s^2
+
+        -- Speed-Cap in Ebene
+        local vel   = PD.pp.AssemblyLinearVelocity
+        local vPlan = projOnPlane(vel, hit.Normal)
+        if vPlan.Magnitude > PD.speedCap and (t * vPlan:Dot(fwd)) > 0 then
+            desired_a = Vector3.new()
+        end
+
+        PD.vf.Force = desired_a * mass
+    end
+
+    -- Sitz-/Heartbeat-Logik für Persistenz
+    RunService.Heartbeat:Connect(function()
+        -- Reattach wenn gewünscht & im Sitz & noch nicht aktiv
+        if PD.wanted and (not PD.enabled) and isSeated() then
+            local v = myVehicleFolder()
+            if v then pd_build(v) end
+        end
+    end)
+    RunService.RenderStepped:Connect(pd_step)
+
+    ----------------------------------------------------------------------
+    -- AIRFLY (echtes Fliegen; forces + orientation; persistiert)
+    ----------------------------------------------------------------------
+    AirFly = AirFly or {} -- für exklusives Ausschalten mit PD
+    do
+        local AF = {
+            wanted=false, enabled=false, conn=nil,
+            pp=nil, att=nil, ao=nil, thrust=nil, lift=nil, drag=nil,
+
+            thrustAccel = 60,     -- Schub (UI)
+            liftK       = 1.0,    -- Auftrieb ~ v^2 * k  (intern fix)
+            dragK       = 0.02,   -- Luftwiderstand ~ v^2  (intern fix)
+            maxPitchDeg = 25,     -- Pitch-Grenze
+            aoResp      = 22,     -- Ausrichtung
+            speedCap    = 180,    -- harte Kappe
+            aCap        = 80      -- Beschl.-Kappe (Sicherheitsnetz)
+        }
+
+        local function af_teardown()
+            if AF.conn then AF.conn:Disconnect() AF.conn=nil end
+            for _,x in ipairs({AF.thrust, AF.lift, AF.drag}) do
+                if x then pcall(function() x.Force = Vector3.new() end) end
+            end
+            for _,inst in ipairs({AF.ao, AF.thrust, AF.lift, AF.drag, AF.att}) do
+                if inst and inst.Parent then inst:Destroy() end
+            end
+            AF.pp, AF.att, AF.ao, AF.thrust, AF.lift, AF.drag = nil,nil,nil,nil,nil,nil
+            AF.enabled=false
+        end
+
+        local function af_build(v)
+            ensurePrimaryPart(v)
+            local pp = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
+            if not pp then return false end
+            AF.pp = pp
+
+            AF.att = Instance.new("Attachment"); AF.att.Name="Sorin_AF_Att"; AF.att.Parent=pp
+
+            AF.ao = Instance.new("AlignOrientation")
+            AF.ao.Name="Sorin_AF_AO"
+            AF.ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+            AF.ao.Attachment0 = AF.att
+            AF.ao.Responsiveness = AF.aoResp
+            AF.ao.MaxTorque = math.huge
+            AF.ao.RigidityEnabled = false
+            AF.ao.Parent = pp
+
+            AF.thrust = Instance.new("VectorForce")
+            AF.thrust.Name="Sorin_AF_Thrust"
+            AF.thrust.Attachment0 = AF.att
+            AF.thrust.RelativeTo  = Enum.ActuatorRelativeTo.World
+            AF.thrust.Force = Vector3.new()
+            AF.thrust.Parent = pp
+
+            AF.lift = Instance.new("VectorForce")
+            AF.lift.Name="Sorin_AF_Lift"
+            AF.lift.Attachment0 = AF.att
+            AF.lift.RelativeTo  = Enum.ActuatorRelativeTo.World
+            AF.lift.Force = Vector3.new()
+            AF.lift.Parent = pp
+
+            AF.drag = Instance.new("VectorForce")
+            AF.drag.Name="Sorin_AF_Drag"
+            AF.drag.Attachment0 = AF.att
+            AF.drag.RelativeTo  = Enum.ActuatorRelativeTo.World
+            AF.drag.Force = Vector3.new()
+            AF.drag.Parent = pp
+
+            AF.enabled=true
+            return true
+        end
+
+        local function af_setWanted(on)
+            AF.wanted = on and true or false
+            if not AF.wanted then
+                af_teardown()
+                _G.__Sorin_AirFlyWanted = false
+                notify("AirFly","Off")
                 return
             end
+            -- exklusiv zu PowerDrive
+            PD.wanted = false
+            pd_teardown()
 
-            -- Input (nur XZ)
-            local t = 0
-            if UserInput:IsKeyDown(Enum.KeyCode.W) then t = t + 1 end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) then t = t - 1 end
+            _G.__Sorin_AirFlyWanted = true
+            if isSeated() then
+                local v = myVehicleFolder(); if not v then notify("AirFly","Kein Fahrzeug."); return end
+                if af_build(v) then notify("AirFly","On") end
+            else
+                notify("AirFly","Armed (aktiviert bei Einstieg)")
+            end
+        end
 
-            local fwd = PD.pp.CFrame.LookVector
-            fwd = projOnPlane(fwd, hit.Normal)
-            if fwd.Magnitude > 0 then fwd = fwd.Unit end
+        AirFly.setWanted = af_setWanted
 
-            local desired_a = fwd * (t * PD.accel)  -- studs/s^2
-            local mass      = math.max(PD.pp.AssemblyMass, 1)
+        local function af_step(dt)
+            if not AF.enabled then return end
+            if not isSeated() then af_teardown(); return end
+            local v = myVehicleFolder(); if not v then af_teardown(); return end
+            local pp = AF.pp; if not (pp and pp.Parent) then af_teardown(); return end
 
-            -- Speed-Cap in Fahr­ebene
-            local vel   = PD.pp.AssemblyLinearVelocity
-            local vPlan = projOnPlane(vel, hit.Normal)
-            if vPlan.Magnitude > PD.speedCap and (t * vPlan:Dot(fwd)) > 0 then
-                desired_a = Vector3.new() -- über Cap: kein extra Schub in Fahrtrichtung
+            -- Eingaben
+            local throttle = (UserInput:IsKeyDown(Enum.KeyCode.W) and 1 or 0)
+                            - (UserInput:IsKeyDown(Enum.KeyCode.S) and 1 or 0)
+            local pitchIn  = (UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space)) and -1 or 0
+            pitchIn        = pitchIn + ((UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl)) and 1 or 0)
+
+            -- Ausrichtung (Yaw zu Kamera, Pitch über Tasten)
+            local camLV = Camera.CFrame.LookVector
+            local yaw   = math.atan2(camLV.X, camLV.Z)
+            local yawCF   = CFrame.fromAxisAngle(Vector3.new(0,1,0), yaw)
+            local pitchCF = CFrame.Angles(math.rad(math.clamp(pitchIn*AF.maxPitchDeg, -AF.maxPitchDeg, AF.maxPitchDeg)), 0, 0)
+            AF.ao.CFrame = yawCF * pitchCF
+
+            -- Basisgrößen
+            local mass   = math.max(pp.AssemblyMass, 1)
+            local g      = Workspace.Gravity
+            local fwd    = pp.CFrame.LookVector
+            local up     = pp.CFrame.UpVector
+            local vel    = pp.AssemblyLinearVelocity
+            local speed  = vel.Magnitude
+
+            if speed > AF.speedCap then
+                AF.dragK = math.max(AF.dragK, 0.03)
             end
 
-            -- leichter Querdrag (sanftere Kontrolle, wirkt nur in Ebene)
-            local lateral = vPlan - fwd * vPlan:Dot(fwd)
-            local dragF   = -lateral * (PD.traction * mass)
+            -- Kräfte
+            local thrustF = (throttle ~= 0) and (fwd * (AF.thrustAccel * throttle * mass)) or Vector3.new()
 
-            -- finale Kraft
-            PD.vf.Force = desired_a * mass + dragF
+            -- Lift nur mit Fahrt – kein Hover
+            local liftMag = (speed > 8) and (AF.liftK * speed * speed) or 0
+            local liftCap = mass * g * 1.15
+            if liftMag > liftCap then liftMag = liftCap end
+            local liftF = up * liftMag
+
+            local dragF = Vector3.new()
+            if speed > 1e-3 then dragF = -vel.Unit * (AF.dragK * speed * speed) end
+
+            -- Gesamtbeschl.-Kappe
+            local acc = (thrustF + liftF + dragF) / mass
+            if acc.Magnitude > AF.aCap then
+                local s = AF.aCap / acc.Magnitude
+                thrustF = thrustF * s; liftF = liftF * s; dragF = dragF * s
+            end
+
+            AF.thrust.Force = thrustF
+            AF.lift.Force   = liftF
+            AF.drag.Force   = dragF
+        end
+
+        -- Persistenz/Attach bei Einstieg
+        RunService.Heartbeat:Connect(function()
+            if AF.wanted and (not AF.enabled) and isSeated() then
+                local v = myVehicleFolder()
+                if v then af_build(v) end
+            end
         end)
+        RunService.RenderStepped:Connect(af_step)
+
+        -- === UI ===
+        local secF = tab:AddSection({ Name = "AirFly (Fliegen)" })
+        local flyToggle
+        flyToggle = secF:AddToggle({
+            Name = "AirFly aktivieren (nur im Auto)",
+            Default = false,
+            Callback = function(on)
+                af_setWanted(on)
+                if flyToggle then flyToggle:Set(AF.wanted) end
+            end
+        })
+        secF:AddBind({
+            Name = "AirFly Toggle Key",
+            Default = Enum.KeyCode.X,
+            Hold = false,
+            Callback = function()
+                af_setWanted(not AF.wanted)
+                if flyToggle then flyToggle:Set(AF.wanted) end
+            end
+        })
+        secF:AddSlider({
+            Name = "Schub (Beschleunigung)",
+            Min = 20, Max = 140, Increment = 5,
+            Default = 60,
+            Callback = function(v) AF.thrustAccel = math.floor(v) end
+        })
     end
 
     ------------------------------ UI ------------------------------
@@ -351,10 +554,18 @@ return function(tab, OrionLib)
     secV:AddButton({ Name = "Kennzeichen anwenden (aktuelles Fahrzeug)", Callback = applyPlateToCurrent })
 
     local secPD = tab:AddSection({ Name = "PowerDrive (Boden-Boost)" })
-    secPD:AddToggle({
+    local pdToggle
+    pdToggle = secPD:AddToggle({
         Name = "PowerDrive aktivieren",
         Default = false,
-        Callback = function(v) pd_toggle(v) end
+        Callback = function(v)
+            -- exklusiv zu AirFly
+            if v then
+                if AirFly and AirFly.setWanted then AirFly.setWanted(false) end
+            end
+            pd_setWanted(v)
+            if pdToggle then pdToggle:Set(PD.wanted) end
+        end
     })
     secPD:AddSlider({
         Name = "Beschleunigung (stud/s^2)",
@@ -362,21 +573,5 @@ return function(tab, OrionLib)
         Default = PD.accel,
         Callback = function(val) PD.accel = math.floor(val) end
     })
-    secPD:AddSlider({
-        Name = "Speed-Cap (stud/s)",
-        Min = 30, Max = 200, Increment = 5,
-        Default = PD.speedCap,
-        Callback = function(val) PD.speedCap = math.floor(val) end
-    })
-    secPD:AddSlider({
-        Name = "Traction (Quer-Dämpfung)",
-        Min = 0, Max = 0.5, Increment = 0.01,
-        Default = PD.traction,
-        Callback = function(val) PD.traction = tonumber(val) or PD.traction end
-    })
 
-    -- Safety: disable PD when you leave the seat
-    RunService.Heartbeat:Connect(function()
-        if PD.enabled and not isSeated() then pd_toggle(false) end
-    end)
 end
