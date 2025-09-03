@@ -1,5 +1,4 @@
 -- tabs/vehicle/common.lua
--- Gibt ein Table SV mit Services, Helpern und (nur) minimaler Persistenz zurück.
 return function(tab, OrionLib)
     local Players     = game:GetService("Players")
     local RunService  = game:GetService("RunService")
@@ -11,34 +10,11 @@ return function(tab, OrionLib)
     local Camera = Workspace.CurrentCamera
 
     local function notify(title, msg, t)
-        pcall(function() OrionLib:MakeNotification({Name=title, Content=msg, Time=t or 3}) end)
-    end
-
-    -- ---------- Persistenz-Grundlage (nur Kennzeichen-Text) ----------
-    local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
-    local SAVE_FILE   = SAVE_FOLDER .. "/vehicle.json"
-    local function read_json(path)
-        local ok, res = pcall(function()
-            if isfile and isfile(path) then return HttpService:JSONDecode(readfile(path)) end
-        end)
-        return ok and res or nil
-    end
-    local function write_json(path, tbl)
         pcall(function()
-            if makefolder and not isfolder(SAVE_FOLDER) then makefolder(SAVE_FOLDER) end
-            if writefile then writefile(path, HttpService:JSONEncode(tbl)) end
+            OrionLib:MakeNotification({Name=title, Content=msg, Time=t or 3})
         end)
     end
-    local CFG = { plateText = "" }
-    do
-        local saved = read_json(SAVE_FILE)
-        if type(saved) == "table" and type(saved.plateText) == "string" then
-            CFG.plateText = saved.plateText
-        end
-    end
-    local function save_cfg() write_json(SAVE_FILE, { plateText = CFG.plateText }) end
 
-    -- ---------- Vehicle-Helfer ----------
     local function VehiclesFolder()
         return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
     end
@@ -153,34 +129,10 @@ return function(tab, OrionLib)
         return seat.Occupant == hum
     end
 
-    -- ---------- Kennzeichen-Anwenden (nur lokal) ----------
-    local function applyPlateTextTo(vf, txt)
-        if not (vf and txt and txt ~= "") then return end
-        local lpRoot = vf:FindFirstChild("LicensePlates", true) or vf:FindFirstChild("LicencePlates", true)
-        local function setLabel(container)
-            if not container then return end
-            local gui = container:FindFirstChild("Gui", true)
-            if gui and gui:FindFirstChild("TextLabel") then
-                pcall(function() gui.TextLabel.Text = txt end)
-            end
-        end
-        if lpRoot then
-            setLabel(lpRoot:FindFirstChild("Back",  true))
-            setLabel(lpRoot:FindFirstChild("Front", true))
-        else
-            for _,d in ipairs(vf:GetDescendants()) do
-                if d:IsA("TextLabel") then pcall(function() d.Text = txt end) end
-            end
-        end
-    end
-
-    -- SV-Objekt fürs restliche System
-    local SV = {
-        Services = {Players=Players, RunService=RunService, UserInput=UserInput, HttpService=HttpService, Workspace=Workspace},
+    return {
+        Services = {RunService=RunService, UserInput=UserInput, Workspace=Workspace, HttpService=HttpService},
         LP = LP, Camera = Camera, OrionLib = OrionLib,
         notify = notify,
-
-        CFG = CFG, save_cfg = save_cfg,
 
         VehiclesFolder = VehiclesFolder,
         myVehicleFolder = myVehicleFolder,
@@ -190,9 +142,5 @@ return function(tab, OrionLib)
         isSeated = isSeated,
         pressPrompt = pressPrompt,
         sitIn = sitIn,
-
-        applyPlateTextTo = applyPlateTextTo,
     }
-
-    return SV
 end
