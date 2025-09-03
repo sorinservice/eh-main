@@ -1,6 +1,6 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    print("Version5 after 2 ban DEV")
+    print("Version 3.2 after 2 ban DEV")
     ---------------------------------------------------------------
     -- Vehicle Mod (SorinHub)
     -- - To Vehicle / Bring Vehicle
@@ -269,8 +269,7 @@ return function(tab, OrionLib)
         if seat then sitIn(seat) end
     end
 
-    ------------------------------ Car Fly -----------------------------------
--- === Car Fly (impulse-based; no new instances; AC-stealth) =================
+ -- === Car Fly (impulse-based; adds gravity compensation on fly) =============
 local flyEnabled    = false
 local flySpeed      = 130
 local safeFly       = false
@@ -279,21 +278,20 @@ local flyToggleUI   = nil
 local savedFlags    = {}
 local lastAirCF     = nil
 local toggleLockTS  = 0
-local fullNoClip    = false -- deaktiviert im Impulsmodus (NoClip -> hochriskant)
+local fullNoClip    = false
 local groundLock    = false
 local exitBlockUntil= 0
 
--- Tuning (AC-freundlich)
-local A_MAX            = 60       -- max Beschleunigung [stud/s^2]
-local CLIMB_MAX        = 40       -- max vertikale Steigrate [stud/s]
+-- Tuning
+local A_MAX            = 60       -- max Δv/dt [stud/s^2] (glättet Jerk)
+local CLIMB_MAX        = 40       -- max vertikale Zielgeschw. [stud/s]
 local JERK_SMOOTH      = 0.15     -- Lerp-Faktor für Zielgeschwindigkeit
 local GROUND_PROBE     = 5        -- Bodennähe-Probe [stud]
-local LIFTOFF_NUDGE    = 2.5      -- Start-„Abheben“ [stud]
+local LIFTOFF_NUDGE    = 2.5      -- Start-Anhebung [stud]
 local Y_BIAS_NEAR_GND  = 0.35     -- leichter Aufwärtsbias nahe Boden
-local YAW_K            = 2.0e0    -- Drehimpuls-Koeffizient (mit Masse skaliert)
-local YAW_CLAMP        = 0.25     -- maximaler Yaw-Fehler (rad) pro Tick, der gegengewirkt wird
+local YAW_K            = 2.0      -- Yaw-Koeffizient (mit Masse skaliert)
+local YAW_CLAMP        = 0.25     -- max Korrektur (rad) pro Tick
 
--- Hilfen
 local function forEachPart(vf, fn)
 	if not vf then return end
 	for _,p in ipairs(vf:GetDescendants()) do
@@ -308,7 +306,6 @@ local function zeroMotion(vf)
 	end)
 end
 
--- Keine Kollisionstweaks/PhysProps – AC-freundlich
 local function setFlightPhysics(vf, on)
 	if not vf then return end
 	if on then
@@ -350,7 +347,6 @@ local function settleToGround(v)
 	pcall(function() v:PivotTo(v:GetPivot() + Vector3.new(0,1.5,0)) end)
 end
 
--- Exit-Blocker (global)
 RunService.Heartbeat:Connect(function()
 	local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
 	if not hum then return end
@@ -360,7 +356,6 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
--- Impuls-Helfer
 local function signedYawError(forward: Vector3, desired: Vector3)
 	local f = Vector3.new(forward.X, 0, forward.Z); if f.Magnitude == 0 then return 0 end
 	local d = Vector3.new(desired.X, 0, desired.Z); if d.Magnitude == 0 then return 0 end
@@ -377,7 +372,6 @@ local function clampVecLength(v: Vector3, maxLen: number)
 	return v * (maxLen / math.max(m, 1e-9))
 end
 
--- Haupttoggle
 local function toggleFly(state)
 	local now = os.clock()
 	if now - toggleLockTS < 0.08 then return end
@@ -432,7 +426,6 @@ local function toggleFly(state)
 	exitBlockUntil = os.clock() + 2
 	notify("Car Fly", ("Aktiviert (Speed %d)"):format(flySpeed))
 
-	-- Impuls-basierter Controller
 	local smoothed = Vector3.new()
 
 	flyConn = RunService.RenderStepped:Connect(function(dt)
@@ -444,25 +437,26 @@ local function toggleFly(state)
 		local ppNow  = v.PrimaryPart or pp
 		if not ppNow then return end
 
-		-- Wunschrichtung
+		-- Input
+		local upKey   = UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space)
+		local downKey = UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl)
+
 		local dir = Vector3.zero
 		if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
 		if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
 		if UserInput:IsKeyDown(Enum.KeyCode.D) then dir += Camera.CFrame.RightVector end
 		if UserInput:IsKeyDown(Enum.KeyCode.A) then dir -= Camera.CFrame.RightVector end
-		if UserInput:IsKeyDown(Enum.KeyCode.E) or UserInput:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
-		if UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+		if upKey   then dir += Vector3.new(0,1,0) end
+		if downKey then dir -= Vector3.new(0,1,0) end
 
-		-- Bodenbias
+		-- Bodenbias (nur geringe Hilfe)
 		do
 			local params = RaycastParams.new()
 			params.FilterType = Enum.RaycastFilterType.Blacklist
 			params.FilterDescendantsInstances = {v}
 			local hit = Workspace:Raycast(rootCF.Position, Vector3.new(0,-GROUND_PROBE,0), params)
-			if hit then
-				if not (UserInput:IsKeyDown(Enum.KeyCode.Q) or UserInput:IsKeyDown(Enum.KeyCode.LeftControl)) then
-					dir += Vector3.new(0, Y_BIAS_NEAR_GND, 0)
-				end
+			if hit and not downKey then
+				dir += Vector3.new(0, Y_BIAS_NEAR_GND, 0)
 			end
 		end
 
@@ -471,31 +465,45 @@ local function toggleFly(state)
 		-- Climb-Limit
 		if target.Y >  CLIMB_MAX then target = Vector3.new(target.X,  CLIMB_MAX, target.Z) end
 		if target.Y < -CLIMB_MAX then target = Vector3.new(target.X, -CLIMB_MAX, target.Z) end
+
 		-- Glättung
 		smoothed = smoothed:Lerp(target, JERK_SMOOTH)
 
-		-- Beschleunigungsbudget → Impuls (J = m * Δv)
-		local curVel = ppNow.AssemblyLinearVelocity
-		local dv     = smoothed - curVel
-		local dvCap  = clampVecLength(dv, A_MAX * math.max(dt, 1/240))
-		if dvCap.Magnitude > 1e-5 then
+		-- --- HOVER-SCHUB (nur bei Fly=ON): m * g * dt ---
+		-- kompensiert Schwerkraft, damit vertikal möglich ist
+		do
 			local mass = math.max(ppNow.AssemblyMass, 1)
-			ppNow:ApplyImpulse(dvCap * mass)
+			local g    = Workspace.Gravity
+			-- beim Sinken reduzierter Support → sinkt sauber
+			local support = downKey and 0.35 or 1.0
+			ppNow:ApplyImpulse(Vector3.new(0, mass * g * dt * support, 0))
 		end
 
-		-- Yaw sanft in Kamerarichtung drehen (nur horizontal)
-		local desiredF = Camera.CFrame.LookVector
-		local yawErr   = signedYawError(rootCF.LookVector, desiredF)
-		if math.abs(yawErr) > 1e-3 then
-			local mass = math.max(ppNow.AssemblyMass, 1)
-			-- einfacher proportionaler Drehimpuls um Y
-			ppNow:ApplyAngularImpulse(Vector3.new(0, yawErr * YAW_K * mass, 0))
+		-- Δv-Budget -> Impuls (additiv zu Hover)
+		do
+			local curVel = ppNow.AssemblyLinearVelocity
+			local dv     = smoothed - curVel
+			local dvCap  = clampVecLength(dv, A_MAX * math.max(dt, 1/240))
+			if dvCap.Magnitude > 1e-5 then
+				local mass = math.max(ppNow.AssemblyMass, 1)
+				ppNow:ApplyImpulse(dvCap * mass)
+			end
+		end
+
+		-- Yaw sanft in Kamerarichtung (nur horizontal)
+		do
+			local desiredF = Camera.CFrame.LookVector
+			local yawErr   = signedYawError(rootCF.LookVector, desiredF)
+			if math.abs(yawErr) > 1e-3 then
+				local mass = math.max(ppNow.AssemblyMass, 1)
+				ppNow:ApplyAngularImpulse(Vector3.new(0, yawErr * YAW_K * mass, 0))
+			end
 		end
 
 		lastAirCF = v:GetPivot()
 	end)
 
-	-- SafeFly: kurz landen & resetten (selten, AC-freundlich)
+	-- SafeFly
 	task.spawn(function()
 		while flyEnabled do
 			if not safeFly then task.wait(0.25)
@@ -507,7 +515,6 @@ local function toggleFly(state)
 				local ppNow = v.PrimaryPart or pp; if not ppNow then break end
 
 				groundLock = true
-				-- Bewegungen dämpfen
 				ppNow:ApplyImpulse(-ppNow.AssemblyLinearVelocity * math.max(ppNow.AssemblyMass,1))
 				zeroMotion(v)
 				setFlightPhysics(v, false)
@@ -524,12 +531,12 @@ local function toggleFly(state)
 	end)
 end
 
--- Auto-off wenn Spieler den Sitz verlässt
 RunService.Heartbeat:Connect(function()
 	if flyEnabled and not isSeated() then
 		toggleFly(false)
 	end
 end)
+
 
     ------------------------------ Mobile Fly Panel ------------------------------
     local function spawnMobileFly()
