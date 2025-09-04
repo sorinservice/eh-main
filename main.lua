@@ -175,15 +175,15 @@ local Window = OrionLib:MakeWindow({
 
 -- Tabs-Mapping (DEV-Branch)
 local TABS = {
-    Info        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/info.lua",
-    ESPs        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/visuals.lua",
-    Graphics    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/graphics.lua",
-    Bypass      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/bypass.lua",
-    Misc        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/misc.lua",
-    Player      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/movement.lua",
-    Aimbot      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/aimbot.lua",
-    Locator     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/locator.lua",
-    VehicleMod = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/vehicle.lua"
+    Info        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/info.lua",
+    ESPs        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/visuals.lua",
+    Graphics    = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/graphics.lua",
+    Bypass      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/bypass.lua",
+    Misc        = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/misc.lua",
+    Player      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/movement.lua",
+    Aimbot      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/aimbot.lua",
+    Locator     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/locator.lua",
+    VehicleMod = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/vehicle.lua"
 }
 
 -- Loader-Helfer
