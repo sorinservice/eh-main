@@ -1,13 +1,8 @@
--- carfly_legacy.lua  – reiner Car Fly (aus deinem alten vehicle.lua extrahiert)
--- Features:
--- - Toggle + Keybind (X)
--- - kamerageführte Ausrichtung
--- - SafeFly (alle 6s kurz Boden 0.5s, danach zurück)
--- - Mobile-Panel (optional)
--- - sauberes Release beim Deaktivieren (landet sanft)
+-- carfly_legacy.lua  – reiner Car Fly (angepasst für factory(SV, tab, OrionLib))
+-- Features: Toggle + Keybind (X), kamera-ausgerichtet, SafeFly, Mobile-Panel,
+-- sauberes Release beim Deaktivieren.
 
-return function(tab, OrionLib)
-    print("la le lu")
+return function(SV, tab, OrionLib)
     ------------------------------
     -- Services / locals (nur für Fly)
     ------------------------------
@@ -17,25 +12,27 @@ return function(tab, OrionLib)
     local Workspace   = game:GetService("Workspace")
 
     local LP     = Players.LocalPlayer
-    local Camera = Workspace.CurrentCamera
+    local Camera = (SV and SV.Camera) or Workspace.CurrentCamera
 
     local function notify(title, msg, t)
-        OrionLib:MakeNotification({Name = title, Content = msg, Time = t or 3})
+        pcall(function()
+            OrionLib:MakeNotification({Name = title, Content = msg, Time = t or 3})
+        end)
     end
 
     ------------------------------
-    -- Vehicle helpers (minimal)
+    -- Vehicle helpers (minimal, prefer SV)
     ------------------------------
     local function VehiclesFolder()
+        if SV and SV.VehiclesFolder then return SV.VehiclesFolder() end
         return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
     end
 
     local function myVehicleFolder()
+        if SV and SV.myVehicleFolder then return SV.myVehicleFolder() end
         local vRoot = VehiclesFolder(); if not vRoot then return nil end
-        -- 1) Modell mit deinem Namen
         local byName = vRoot:FindFirstChild(LP.Name)
         if byName then return byName end
-        -- 2) Attribute "Owner" == dein Name
         for _,m in ipairs(vRoot:GetChildren()) do
             if (m:IsA("Model") or m:IsA("Folder")) and (m.GetAttribute and m:GetAttribute("Owner") == LP.Name) then
                 return m
@@ -45,6 +42,7 @@ return function(tab, OrionLib)
     end
 
     local function ensurePrimaryPart(model)
+        if SV and SV.ensurePrimaryPart then return SV.ensurePrimaryPart(model) end
         if not model then return false end
         if model.PrimaryPart then return true end
         for _,d in ipairs(model:GetDescendants()) do
@@ -57,6 +55,7 @@ return function(tab, OrionLib)
     end
 
     local function isSeated()
+        if SV and SV.isSeated then return SV.isSeated() end
         local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
         return hum and hum.SeatPart ~= nil
     end
@@ -95,7 +94,7 @@ return function(tab, OrionLib)
                 if bp and bp.Parent then
                     bp.Anchored   = fl.Anchored
                     bp.CanCollide = fl.CanCollide
-                    bp.AssemblyLinearVelocity = Vector3.new(0,-10,0) -- leichter Down-Nudge
+                    bp.AssemblyLinearVelocity = Vector3.new(0,-10,0)
                 end
             end
             savedFlags = {}
@@ -120,7 +119,6 @@ return function(tab, OrionLib)
     end
 
     local function toggleFly(state)
-        -- Debounce (UI + Keybind im selben Frame)
         local now = os.clock()
         if now - toggleLockTS < 0.25 then return end
         toggleLockTS = now
@@ -134,7 +132,7 @@ return function(tab, OrionLib)
         if state == flyEnabled then return end
 
         flyEnabled = state
-        _G.__Sorin_FlyActive = flyEnabled -- globaler Status
+        _G.__Sorin_FlyActive = flyEnabled
         if flyToggleUI then flyToggleUI:Set(flyEnabled) end
 
         if flyConn then flyConn:Disconnect(); flyConn = nil end
@@ -160,17 +158,14 @@ return function(tab, OrionLib)
 
         flyConn = RunService.RenderStepped:Connect(function(dt)
             if not flyEnabled then return end
-            -- aussteigen → auto-off
             if not isSeated() then toggleFly(false); return end
 
             local v = myVehicleFolder(); if not v then return end
             local root = v:GetPivot()
 
-            -- zur Kamera drehen
             local targetCF = CFrame.lookAt(root.Position, root.Position + Camera.CFrame.LookVector)
             local newCF    = root:Lerp(targetCF, math.clamp(ROT_LERP, 0, 1))
 
-            -- Bewegung (WASD + Space/Q)
             local dir = Vector3.zero
             if UserInput:IsKeyDown(Enum.KeyCode.W) then dir += Camera.CFrame.LookVector end
             if UserInput:IsKeyDown(Enum.KeyCode.S) then dir -= Camera.CFrame.LookVector end
@@ -190,7 +185,6 @@ return function(tab, OrionLib)
             lastAirCF = newCF
         end)
 
-        -- SafeFly: alle 6s kurz Boden, dann exakt zurück
         task.spawn(function()
             while flyEnabled do
                 if not safeFly then task.wait(0.25)
@@ -212,7 +206,6 @@ return function(tab, OrionLib)
         end)
     end
 
-    -- Falls du den Sitz verlässt: Fly automatisch aus
     RunService.Heartbeat:Connect(function()
         if flyEnabled and not isSeated() then
             toggleFly(false)
@@ -266,7 +259,7 @@ return function(tab, OrionLib)
 
         mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(function()
             if not isSeated() then notify("Car Fly","Nur im Auto."); return end
-            toggleFly() -- spiegelt UI Toggle mit Debounce
+            toggleFly()
         end)
         mkBtn("^",      85, 34, 60, 28, "F")
         mkBtn("v",      85,100, 60, 28, "B")
@@ -275,24 +268,6 @@ return function(tab, OrionLib)
         mkBtn("Up",     155,34, 60, 28, "U")
         mkBtn("Down",   155,100,60, 28, "D")
 
-        -- Drag über Kopfzeile
-        local dragging, start, startPos
-        frame.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 and input.Position.Y - frame.AbsolutePosition.Y <= 30 then
-                dragging = true; start = input.Position; startPos = frame.Position
-                input.Changed:Connect(function()
-                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
-                end)
-            end
-        end)
-        UserInput.InputChanged:Connect(function(input)
-            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = input.Position - start
-                frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-
-        -- Button-Hold Bewegung
         RunService.RenderStepped:Connect(function(dt)
             if not gui.Enabled or not flyEnabled then return end
             if not isSeated() then return end
