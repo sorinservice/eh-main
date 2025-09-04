@@ -3,7 +3,7 @@
 -- sauberes Release beim Deaktivieren.
 
 return function(SV, tab, OrionLib)
-    print("Nutteeeeeeeeeeeeeeeeeeeeeeeeeee")
+    print("*Heulemoji oder so*")
     ------------------------------
     -- Services / locals (nur für Fly)
     ------------------------------
