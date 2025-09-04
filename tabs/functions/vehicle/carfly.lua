@@ -87,7 +87,7 @@ return function(SV, tab, OrionLib)
             savedFlags = {}
             forEachPart(vf, function(bp)
                 savedFlags[bp] = {Anchored = bp.Anchored, CanCollide = bp.CanCollide}
-                bp.Anchored   = true
+                bp.Anchored   = false
                 bp.CanCollide = false
             end)
         else
