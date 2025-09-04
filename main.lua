@@ -183,7 +183,7 @@ local TABS = {
     Player      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/movement.lua",
     Aimbot      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/aimbot.lua",
     Locator     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/locator.lua",
-    VehicleMod = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/vehicle.lua"
+    VehicleMod  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/vehicle.lua"
 }
 
 -- Loader-Helfer
