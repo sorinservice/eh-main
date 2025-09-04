@@ -1,4 +1,4 @@
--- tabs/vehicle/common.lua
+-- tabs/functions/vehicle/vehicle/common.lua
 return function(tab, OrionLib)
     local Players     = game:GetService("Players")
     local RunService  = game:GetService("RunService")
@@ -9,12 +9,14 @@ return function(tab, OrionLib)
     local LP     = Players.LocalPlayer
     local Camera = Workspace.CurrentCamera
 
+    -- ---------------- Notifications ----------------
     local function notify(title, msg, t)
         pcall(function()
             OrionLib:MakeNotification({Name=title, Content=msg, Time=t or 3})
         end)
     end
 
+    -- ---------------- Vehicle helpers --------------
     local function VehiclesFolder()
         return Workspace:FindFirstChild("Vehicles") or Workspace:FindFirstChild("vehicles") or Workspace
     end
@@ -24,7 +26,7 @@ return function(tab, OrionLib)
         local byName = vRoot:FindFirstChild(LP.Name)
         if byName then return byName end
         for _,m in ipairs(vRoot:GetChildren()) do
-            if (m:IsA("Model") or m:IsA("Folder")) and (m.GetAttribute and m:GetAttribute("Owner") == LP.Name) then
+            if (m:IsA("Model") or m:IsA("Folder")) and (m.GetAttribute and m:GetAttribute("Owner")==LP.Name) then
                 return m
             end
         end
@@ -83,7 +85,7 @@ return function(tab, OrionLib)
         tries = tries or 12
         if not pp then return false end
         for _=1,tries do
-            if typeof(fireproximityprompt) == "function" then
+            if typeof(fireproximityprompt)=="function" then
                 pcall(function() fireproximityprompt(pp, math.max(pp.HoldDuration or 0.15, 0.1)) end)
             else
                 pp:InputHoldBegin(); task.wait(math.max(pp.HoldDuration or 0.15, 0.1)); pp:InputHoldEnd()
@@ -104,11 +106,8 @@ return function(tab, OrionLib)
         if pp then
             local baseCF = CFrame.new()
             if pp.Parent then
-                if pp.Parent.GetPivot then
-                    baseCF = pp.Parent:GetPivot()
-                elseif pp.Parent:IsA("BasePart") then
-                    baseCF = CFrame.new(pp.Parent.Position)
-                end
+                if pp.Parent.GetPivot then baseCF = pp.Parent:GetPivot()
+                elseif pp.Parent:IsA("BasePart") then baseCF = CFrame.new(pp.Parent.Position) end
             end
             char:WaitForChild("HumanoidRootPart").CFrame = baseCF * CFrame.new(-1.2, 1.4, 0.2)
             task.wait(0.05)
@@ -129,11 +128,66 @@ return function(tab, OrionLib)
         return seat.Occupant == hum
     end
 
+    -- ---------------- Plate persistence -------------
+    local SAVE_FOLDER = OrionLib.Folder or "SorinConfig"
+    local SAVE_FILE   = SAVE_FOLDER .. "/vehicle.json"
+
+    local function read_json(path)
+        local ok, res = pcall(function()
+            if isfile and isfile(path) then
+                return HttpService:JSONDecode(readfile(path))
+            end
+        end)
+        return ok and res or nil
+    end
+    local function write_json(path, tbl)
+        pcall(function()
+            if makefolder and not isfolder(SAVE_FOLDER) then makefolder(SAVE_FOLDER) end
+            if writefile then writefile(path, HttpService:JSONEncode(tbl)) end
+        end)
+    end
+
+    local CFG = { plateText = "" }
+    do
+        local saved = read_json(SAVE_FILE)
+        if type(saved)=="table" and type(saved.plateText)=="string" then
+            CFG.plateText = saved.plateText
+        end
+    end
+    local function save_cfg()
+        write_json(SAVE_FILE, { plateText = CFG.plateText })
+    end
+
+    local function applyPlateTextTo(vf, txt)
+        if not (vf and txt and txt~="") then return end
+        local lpRoot = vf:FindFirstChild("LicensePlates", true) or vf:FindFirstChild("LicencePlates", true)
+        local function setLabel(container)
+            if not container then return end
+            local gui = container:FindFirstChild("Gui", true)
+            if gui and gui:FindFirstChild("TextLabel") then
+                pcall(function() gui.TextLabel.Text = txt end)
+            end
+        end
+        if lpRoot then
+            setLabel(lpRoot:FindFirstChild("Back", true))
+            setLabel(lpRoot:FindFirstChild("Front", true))
+        else
+            for _,d in ipairs(vf:GetDescendants()) do
+                if d:IsA("TextLabel") then pcall(function() d.Text = txt end) end
+            end
+        end
+    end
+
+    -- Rückgabe: SV
     return {
-        Services = {RunService=RunService, UserInput=UserInput, Workspace=Workspace, HttpService=HttpService},
+        -- services & context
+        Services = { RunService=RunService, UserInput=UserInput, Workspace=Workspace, HttpService=HttpService },
         LP = LP, Camera = Camera, OrionLib = OrionLib,
+
+        -- ui helper
         notify = notify,
 
+        -- vehicle utils
         VehiclesFolder = VehiclesFolder,
         myVehicleFolder = myVehicleFolder,
         ensurePrimaryPart = ensurePrimaryPart,
@@ -142,5 +196,10 @@ return function(tab, OrionLib)
         isSeated = isSeated,
         pressPrompt = pressPrompt,
         sitIn = sitIn,
+
+        -- plate cfg + helpers (für plates.lua)
+        CFG = CFG,
+        save_cfg = save_cfg,
+        applyPlateTextTo = applyPlateTextTo,
     }
 end
