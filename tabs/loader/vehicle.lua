@@ -2,7 +2,7 @@
 return function(tab, OrionLib)
     -- Passe BASE an deinen neuen Ordner an:
     -- /tabs/functions/vehicle/vehicle/*.lua
-    local BASE = "https://raw.githubusercontent.com/sorinservice/eh-main/refs/heads/dev/tabs/functions/vehicle/vehicle/"
+    local BASE = "https://raw.githubusercontent.com/sorinservice/eh-main/refs/heads/dev/tabs/functions/vehicle/"
 
     local function httpget(url)
         local ok, res = pcall(function() return game:HttpGet(url .. "?cb=" .. tostring(os.clock())) end)
