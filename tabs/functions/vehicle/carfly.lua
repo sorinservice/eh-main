@@ -4,6 +4,7 @@
 -- Signatur passt zu deinem Loader: return function(SV, tab, OrionLib)
 
 return function(SV, tab, OrionLib)
+    print("La le lu, nur der Mann im Mond schaut zu...")
     local RunService  = game:GetService("RunService")
     local UserInput   = game:GetService("UserInputService")
     local Workspace   = game:GetService("Workspace")
