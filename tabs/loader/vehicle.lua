@@ -1,6 +1,6 @@
 -- tabs/vehicle.lua
 return function(tab, OrionLib)
-    local BASE = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/vehicle/"
+    local BASE = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/functions/vehicle/"
 
     local function httpget(url)
         -- robust: erst mit ,true (manche Umgebungen), sonst ohne
