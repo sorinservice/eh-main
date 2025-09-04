@@ -1,263 +1,310 @@
--- tabs/functions/vehicle/carfly.lua
--- Car Fly – 3 Methoden zum Umschalten (A: LV+Hover, B: Δv-Impulse, C: Legacy Body*).
--- Kein Teleport beim Start. Vor/zurück + hoch/runter; Nase folgt Kamera.
+-- Zach-style Car Fly (serverweit, kein Anchor/Teleport/Attachments)
+-- + Camera-Facing, Soft-Disable, Lift-off-Bias, SafeFly (ohne TP)
+
 return function(SV, tab, OrionLib)
-    print("Tests. NICHT BENUTZEN!!! BANN IST SEHR WARSCHEINLICH!!!")
+    print("Fuck yourself")
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
     local Workspace    = game:GetService("Workspace")
     local Camera       = SV.Camera
-    local notify       = SV.notify
 
-    --------------------------------------------------------------------
-    -- Einstellungen
-    --------------------------------------------------------------------
-    local DEFAULT_SPEED   = 130     -- Startwert (im UI änderbar)
-    local ACCEL_LERP      = 0.14    -- Glättung Zielgeschw. [0..1]
-    local AO_RESP         = 35      -- AlignOrientation.Responsiveness
-    local SPEED_KEY       = Enum.KeyCode.LeftControl
-    local SPEED_MULTI     = 3
-    local UP_KEY          = Enum.KeyCode.Space
-    local DOWN_KEYS       = {Enum.KeyCode.Q, Enum.KeyCode.LeftControl}
+    -- ===== Tuning =====
+    local DEFAULT_SPEED     = 130
+    local ACCEL_LERP        = 0.18      -- wie schnell Zielgeschw. erreicht wird
+    local TURN_LERP         = 0.12      -- wie schnell zur Kamera gedreht wird
+    local SIDE_SCALE        = 0.75      -- A/D etwas entschärfen (Anti-Cheat)
+    local MAX_CLIMB         = 55        -- max. vertikale Zielgeschw. |Y|
+    local LIFTOFF_NEAR      = 4         -- Bodennähe-Probe (Studs)
+    local LIFTOFF_UP        = 12        -- zusätzl. Up-Bias nahe Boden (Stud/s)
+    local SAFE_PERIOD       = 6.0       -- alle 6s
+    local SAFE_HOLD         = 0.5       -- 0.5s „bremsen + leicht sinken“
+    local SAFE_SLOW_FACTOR  = 0.25      -- auf 25% Zieltempo drosseln
+    local SAFE_SINK_Y       = -16       -- leichtes Absinken während SafeHold
+    local SOFT_OFF_TIME     = 0.6       -- Ausrollzeit beim Ausschalten (s)
+    local SPEED_KEY         = Enum.KeyCode.LeftControl
+    local SPEED_MULTI       = 3
 
-    --------------------------------------------------------------------
-    -- State
-    --------------------------------------------------------------------
+    -- ===== State =====
     local fly = {
-        enabled = false,
-        mode    = "A",    -- "A" | "B" | "C"
-        speed   = DEFAULT_SPEED,
-        curVel  = Vector3.new(),
-        conn    = nil,
-
-        -- A: LV/VectorForce/AO
-        pp=nil, att=nil, lv=nil, vf=nil, ao=nil,
-
-        -- C: Body*
-        bv=nil, bg=nil,
+        enabled   = false,
+        speed     = DEFAULT_SPEED,
+        curVel    = Vector3.new(),
+        conn      = nil,
+        safeTask  = nil,
+        safeOn    = false,
+        uiToggle  = nil,
+        mobileUI  = nil,
+        mobile    = {F=false,B=false,L=false,R=false,U=false,D=false},
+        toggleTS  = 0,
+        smoothing = 0, -- 0..1 Dämpfung im Frame (für SafeFly/SoftOff)
     }
 
-    local function isDown(k)
-        return UserInput:IsKeyDown(k)
-    end
-    local function isAnyDown(list)
-        for _,k in ipairs(list) do if isDown(k) then return true end end
-        return false
-    end
+    local function notify(t,m,s) SV.notify(t,m,s or 3) end
 
-    local function vehicle()
-        return SV.myVehicleFolder()
-    end
-    local function primaryPart(v)
+    -- ===== Helpers =====
+    local function myVehicle() return SV.myVehicleFolder() end
+
+    local function getPP(v)
         SV.ensurePrimaryPart(v)
         return v and v.PrimaryPart or nil
     end
 
-    --------------------------------------------------------------------
-    -- Helfer: Eingabe → gewünschte Zielgeschwindigkeit (kein Strafen)
-    --------------------------------------------------------------------
-    local function desiredVelocity(baseSpeed)
-        local v = Vector3.new()
+    local function isOwner(bp)
+        if typeof(isnetworkowner) == "function" then
+            local ok, owns = pcall(isnetworkowner, bp)
+            if ok then return owns end
+        end
+        return true
+    end
+
+    local function groundNear(v, depth)
+        local cf = v:GetPivot()
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        params.FilterDescendantsInstances = { v }
+        local hit = Workspace:Raycast(cf.Position, Vector3.new(0, -depth, 0), params)
+        return hit ~= nil
+    end
+
+    -- ===== Core Step (Heartbeat) =====
+    local function step(dt)
+        if not fly.enabled then return end
+        if not SV.isSeated() then return end
+
+        local v  = myVehicle(); if not v then return end
+        local pp = getPP(v);    if not pp or not pp.Parent then return end
+        if pp.Anchored then return end
+        if not isOwner(pp) then return end
+
+        -- Eingabe (W/A/S/D + Space + Mobile Buttons)
+        local wish = Vector3.zero
         if not UserInput:GetFocusedTextBox() then
-            -- Nur Blickrichtung vor/zurück
-            if isDown(Enum.KeyCode.W) then v = v + Camera.CFrame.LookVector end
-            if isDown(Enum.KeyCode.S) then v = v - Camera.CFrame.LookVector end
-            -- Hoch/Runter
-            if isDown(UP_KEY) then v = v + Vector3.new(0,1,0) end
-            if isAnyDown(DOWN_KEYS) then v = v - Vector3.new(0,1,0) end
-            -- Turbo
-            if isDown(SPEED_KEY) then baseSpeed = baseSpeed * SPEED_MULTI end
-        end
-        if v.Magnitude > 0 then v = v.Unit * baseSpeed end
-        return v
-    end
+            local look = Camera.CFrame.LookVector
+            local right= Camera.CFrame.RightVector
+            local up   = Vector3.new(0,1,0)
 
-    --------------------------------------------------------------------
-    -- MODE A: Serverseitig, LinearVelocity + VectorForce + AlignOrientation
-    --------------------------------------------------------------------
-    local function a_build(pp)
-        fly.att = Instance.new("Attachment")
-        fly.att.Name = "CF_Att"; fly.att.Parent = pp
-
-        fly.lv = Instance.new("LinearVelocity")
-        fly.lv.Name = "CF_LV"; fly.lv.RelativeTo = Enum.ActuatorRelativeTo.World
-        fly.lv.Attachment0 = fly.att; fly.lv.MaxForce = math.huge
-        fly.lv.VectorVelocity = Vector3.new()
-        fly.lv.Parent = pp
-
-        fly.vf = Instance.new("VectorForce")
-        fly.vf.Name = "CF_VF"; fly.vf.RelativeTo = Enum.ActuatorRelativeTo.World
-        fly.vf.Attachment0 = fly.att; fly.vf.Force = Vector3.new()
-        fly.vf.Parent = pp
-
-        fly.ao = Instance.new("AlignOrientation")
-        fly.ao.Name = "CF_AO"; fly.ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
-        fly.ao.Attachment0 = fly.att; fly.ao.Responsiveness = AO_RESP
-        fly.ao.MaxTorque = math.huge; fly.ao.RigidityEnabled = false
-        fly.ao.Parent = pp
-    end
-    local function a_step(pp, dt)
-        -- Grav kompensieren (nur halten; steigen/sinken über desired Y)
-        local mass = math.max(pp.AssemblyMass, 1)
-        fly.vf.Force = Vector3.new(0, mass * Workspace.Gravity, 0)
-
-        -- Ziel-Vel
-        local target = desiredVelocity(fly.speed)
-        fly.curVel = fly.curVel:Lerp(target, ACCEL_LERP)
-        fly.lv.VectorVelocity = fly.curVel
-
-        -- Nase zur Kamera
-        fly.ao.CFrame = Camera.CFrame.Rotation
-    end
-    local function a_destroy()
-        if fly.lv then pcall(function() fly.lv.VectorVelocity = Vector3.new() end) end
-        if fly.vf then pcall(function() fly.vf.Force = Vector3.new() end) end
-        for _,o in ipairs({fly.ao, fly.vf, fly.lv, fly.att}) do
-            if o and o.Parent then o:Destroy() end
-        end
-        fly.att, fly.lv, fly.vf, fly.ao = nil,nil,nil,nil
-    end
-
-    --------------------------------------------------------------------
-    -- MODE B: Impuls-Δv (ApplyImpulse) + weiche Kamera-Ausrichtung
-    --------------------------------------------------------------------
-    local DV_CAP = 60 -- studs/s^2 cap pro Sekunde (wird mit dt skaliert)
-    local AO_TORQUE = 2.0
-    local function b_step(pp, dt)
-        local target = desiredVelocity(fly.speed)
-        fly.curVel = fly.curVel:Lerp(target, ACCEL_LERP)
-
-        local cur = pp.AssemblyLinearVelocity
-        local dv  = fly.curVel - cur
-        local maxDv = DV_CAP * math.max(dt, 1/240)
-        if dv.Magnitude > maxDv then dv = dv.Unit * maxDv end
-        if dv.Magnitude > 1e-5 then
-            pp:ApplyImpulse(dv * math.max(pp.AssemblyMass,1))
+            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.mobile.F then wish += look end
+            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.mobile.B then wish -= look end
+            if UserInput:IsKeyDown(Enum.KeyCode.D) or fly.mobile.R then wish += right * SIDE_SCALE end
+            if UserInput:IsKeyDown(Enum.KeyCode.A) or fly.mobile.L then wish -= right * SIDE_SCALE end
+            if UserInput:IsKeyDown(Enum.KeyCode.Space) or fly.mobile.U then wish += up end
+            if UserInput:IsKeyDown(SPEED_KEY) then wish = wish * SPEED_MULTI end
         end
 
-        -- Yaw sanft zur Kamera (nur horizontal)
-        local fwd = pp.CFrame.LookVector
-        local des = Camera.CFrame.LookVector
-        local f = Vector3.new(fwd.X,0,fwd.Z); local d = Vector3.new(des.X,0,des.Z)
-        if f.Magnitude>0 and d.Magnitude>0 then
-            f=f.Unit; d=d.Unit
-            local crossY = (f:Cross(d)).Y
-            local dot = math.clamp(f:Dot(d), -1, 1)
-            local ang = math.acos(dot) * (crossY>=0 and 1 or -1)
-            if math.abs(ang) > 1e-3 then
-                pp:ApplyAngularImpulse(Vector3.new(0, ang * AO_TORQUE * math.max(pp.AssemblyMass,1), 0))
+        -- Zielgeschwindigkeit
+        local target = Vector3.zero
+        if wish.Magnitude > 0 then
+            wish = wish.Unit
+            target = wish * fly.speed
+        end
+
+        -- Lift-off nahe Boden: leichter Up-Bias (nur wenn nicht aktiv abwärts)
+        local nearG = groundNear(v, LIFTOFF_NEAR)
+        if nearG and not (UserInput:IsKeyDown(Enum.KeyCode.LeftControl) or fly.mobile.D) then
+            target = target + Vector3.new(0, LIFTOFF_UP, 0)
+        end
+
+        -- vertikal deckeln (sanfter)
+        if target.Y >  MAX_CLIMB then target = Vector3.new(target.X,  MAX_CLIMB, target.Z) end
+        if target.Y < -MAX_CLIMB then target = Vector3.new(target.X, -MAX_CLIMB, target.Z) end
+
+        -- SafeFly-Bremse aktiv?
+        if fly.smoothing > 0 then
+            -- zieh Zieltempo etwas runter und gib sanft Y-Sink hinzu
+            target = target * (1 - fly.smoothing*(1 - SAFE_SLOW_FACTOR))
+            target = target + Vector3.new(0, SAFE_SINK_Y * fly.smoothing, 0)
+        end
+
+        -- sanft zur Zielgeschwindigkeit
+        local lerpA = math.clamp(ACCEL_LERP, 0, 1)
+        fly.curVel = fly.curVel:Lerp(target, lerpA)
+
+        -- direkt Velocity schreiben (Zach-Stil)
+        -- kein hartes Nullstellen, kein Teleport
+        pp.Velocity = fly.curVel
+
+        -- Kamera-Facing: nur Rotation weich lerpen (wenn PP nicht HRP ist)
+        if pp ~= (SV.LP.Character and SV.LP.Character:FindFirstChild("HumanoidRootPart")) then
+            local dir = fly.curVel.Magnitude > 1 and fly.curVel.Unit or Camera.CFrame.LookVector
+            local tgt = CFrame.lookAt(pp.Position, pp.Position + dir)
+            pp.CFrame = pp.CFrame:Lerp(tgt, math.clamp(TURN_LERP, 0, 1))
+        end
+    end
+
+    -- ===== SafeFly (ohne Teleport) =====
+    local function startSafeFly()
+        if fly.safeTask then task.cancel(fly.safeTask) end
+        fly.safeTask = task.spawn(function()
+            while fly.enabled do
+                if not fly.safeOn then task.wait(0.25)
+                else
+                    task.wait(SAFE_PERIOD)
+                    if not fly.enabled then break end
+                    -- 0.5s „bremsen + leicht sinken“ durch smoothing-Blend
+                    local t0 = os.clock()
+                    while os.clock() - t0 < SAFE_HOLD and fly.enabled do
+                        fly.smoothing = 1 -- volle Bremswirkung
+                        RunService.Heartbeat:Wait()
+                    end
+                    fly.smoothing = 0
+                end
             end
+        end)
+    end
+
+    -- ===== Soft Disable (Ausrollen statt Voll-Stop) =====
+    local function softDisable(pp)
+        -- Ausrollen über SOFT_OFF_TIME; kein Teleport/Zero-Motion
+        local start = tick()
+        local dur   = SOFT_OFF_TIME
+        local v0    = pp.Velocity
+        while tick() - start < dur do
+            local a = (tick() - start) / dur
+            -- Exponentielles Decay
+            local factor = math.exp(-3*a)
+            pp.Velocity = v0 * factor + Vector3.new(0, SAFE_SINK_Y * 0.25 * (1 - factor), 0)
+            RunService.Heartbeat:Wait()
         end
     end
 
-    --------------------------------------------------------------------
-    -- MODE C: Legacy BodyVelocity/BodyGyro (risikoreicher)
-    --------------------------------------------------------------------
-    local function c_build(pp)
-        fly.bv = Instance.new("BodyVelocity")
-        fly.bv.Name = "CF_BV"; fly.bv.MaxForce = Vector3.new(1e9,1e9,1e9)
-        fly.bv.Velocity = Vector3.new(); fly.bv.Parent = pp
+    -- ===== Mobile Panel =====
+    local function spawnMobileFly()
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "Sorin_MobileFly"
+        gui.ResetOnSpawn = false
+        gui.IgnoreGuiInset = true
+        gui.Enabled = false
+        gui.Parent = game:GetService("CoreGui")
 
-        fly.bg = Instance.new("BodyGyro")
-        fly.bg.Name = "CF_BG"; fly.bg.MaxTorque = Vector3.new(1e9,1e9,1e9)
-        fly.bg.D = 600; fly.bg.P = 5000; fly.bg.Parent = pp
-    end
-    local function c_step(pp, dt)
-        local target = desiredVelocity(fly.speed)
-        fly.curVel = fly.curVel:Lerp(target, ACCEL_LERP)
-        fly.bv.Velocity = fly.curVel
-        fly.bg.CFrame = CFrame.lookAt(pp.Position, pp.Position + Camera.CFrame.LookVector)
-    end
-    local function c_destroy()
-        for _,o in ipairs({fly.bv, fly.bg}) do
-            if o and o.Parent then o:Destroy() end
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.fromOffset(230, 160)
+        frame.Position = UDim2.fromOffset(40, 300)
+        frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
+        frame.Parent = gui
+        Instance.new("UICorner", frame).CornerRadius = UDim.new(0,12)
+
+        local title = Instance.new("TextLabel")
+        title.Size = UDim2.new(1, -10, 0, 22)
+        title.Position = UDim2.fromOffset(10, 6)
+        title.BackgroundTransparency = 1
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 14
+        title.TextColor3 = Color3.fromRGB(240,240,240)
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.Text = "Car Fly"
+        title.Parent = frame
+
+        local function mkBtn(txt, x, y, w, h, key)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.fromOffset(w,h); b.Position = UDim2.fromOffset(x,y)
+            b.Text = txt; b.BackgroundColor3 = Color3.fromRGB(40,40,40)
+            b.TextColor3 = Color3.fromRGB(230,230,230); b.Font = Enum.Font.GothamSemibold; b.TextSize = 14
+            b.Parent = frame; Instance.new("UICorner", b).CornerRadius = UDim.new(0,8)
+            b.MouseButton1Down:Connect(function() fly.mobile[key] = true end)
+            b.MouseButton1Up:Connect(function() fly.mobile[key] = false end)
+            b.MouseLeave:Connect(function() fly.mobile[key] = false end)
+            return b
         end
-        fly.bv, fly.bg = nil,nil
-    end
 
-    --------------------------------------------------------------------
-    -- Start/Stop (kein Teleport!)
-    --------------------------------------------------------------------
+        mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(function()
+            local now = os.clock(); if now - fly.toggleTS < 0.15 then return end
+            fly.toggleTS = now
+            fly.enabled = not fly.enabled
+            if fly.uiToggle then fly.uiToggle:Set(fly.enabled) end
+            if fly.enabled then
+                fly.curVel = Vector3.new()
+                if fly.conn then fly.conn:Disconnect() end
+                fly.conn = RunService.Heartbeat:Connect(step)
+                startSafeFly()
+                notify("Car Fly", ("Aktiviert (Speed %d)"):format(fly.speed), 2)
+            else
+                if fly.conn then fly.conn:Disconnect() fly.conn=nil end
+                if fly.safeTask then task.cancel(fly.safeTask) fly.safeTask=nil end
+                local v = myVehicle(); local pp = v and getPP(v)
+                if pp then softDisable(pp) end
+                notify("Car Fly","Deaktiviert.", 2)
+            end
+        end)
+        mkBtn("^",      85, 34, 60, 28, "F")
+        mkBtn("v",      85,100, 60, 28, "B")
+        mkBtn("<<",     15, 67, 60, 28, "L")
+        mkBtn(">>",     155,67, 60, 28, "R")
+        mkBtn("Up",     155,34, 60, 28, "U")
+        mkBtn("Down",   155,100, 60, 28, "D")
+
+        -- Drag nur über Kopfzeile
+        local dragging, startPos, startInput
+        frame.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+               and input.Position.Y - frame.AbsolutePosition.Y <= 26 then
+                dragging = true; startInput = input.Position; startPos = frame.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end)
+        UserInput.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = input.Position - startInput
+                frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+
+        return gui
+    end
+    local MobileFlyGui = spawnMobileFly()
+
+    -- ===== Toggle / UI =====
     local function setEnabled(on)
         if on == fly.enabled then return end
-        local v = vehicle()
-        if on then
-            if not v then notify("Car Fly","Kein Fahrzeug."); return end
-            fly.pp = primaryPart(v)
-            if not fly.pp or fly.pp.Anchored then notify("Car Fly","Kein PrimaryPart oder anchored."); return end
+        fly.enabled = on
 
-            -- Mode-spezifisch bauen
-            if fly.mode == "A" then a_build(fly.pp)
-            elseif fly.mode == "C" then c_build(fly.pp)
-            end
-
-            -- Ticker
-            if fly.conn then fly.conn:Disconnect() end
-            fly.conn = RunService.Heartbeat:Connect(function(dt)
-                if not SV.isSeated() then return end
-                if not fly.pp or not fly.pp.Parent then return end
-                if fly.pp.Anchored then return end
-                -- Optional: Ownership gate (meist safe)
-                if typeof(isnetworkowner) == "function" then
-                    local ok, owns = pcall(isnetworkowner, fly.pp)
-                    if ok and not owns then return end
-                end
-
-                if fly.mode == "A" then
-                    a_step(fly.pp, dt)
-                elseif fly.mode == "B" then
-                    b_step(fly.pp, dt)
-                elseif fly.mode == "C" then
-                    c_step(fly.pp, dt)
-                end
-            end)
-
-            fly.enabled = true
-            notify("Car Fly", ("ON (Mode %s, Speed %d)"):format(fly.mode, fly.speed), 2)
-        else
-            fly.enabled = false
-            if fly.conn then fly.conn:Disconnect() fly.conn=nil end
-            -- Mode cleanup (nichts teleportieren!)
-            if fly.mode == "A" then a_destroy()
-            elseif fly.mode == "C" then c_destroy()
-            end
+        if fly.enabled then
             fly.curVel = Vector3.new()
-            notify("Car Fly","OFF", 2)
+            if fly.conn then fly.conn:Disconnect() end
+            fly.conn = RunService.Heartbeat:Connect(step)
+            startSafeFly()
+            if fly.uiToggle then fly.uiToggle:Set(true) end
+            notify("Car Fly", ("Aktiviert (Speed %d)"):format(fly.speed), 2)
+        else
+            if fly.conn then fly.conn:Disconnect() fly.conn=nil end
+            if fly.safeTask then task.cancel(fly.safeTask) fly.safeTask=nil end
+            local v = myVehicle(); local pp = v and getPP(v)
+            if pp then softDisable(pp) end
+            if fly.uiToggle then fly.uiToggle:Set(false) end
+            notify("Car Fly","Deaktiviert.", 2)
         end
     end
 
-    local function toggle() setEnabled(not fly.enabled) end
-    local function switchMode(newMode)
-        if newMode == fly.mode then return end
-        local wasOn = fly.enabled
-        if wasOn then setEnabled(false) end
-        fly.mode = newMode
-        notify("Car Fly", "Mode "..newMode.." gewählt", 2)
-        if wasOn then setEnabled(true) end
+    local function toggle()
+        local now = os.clock()
+        if now - fly.toggleTS < 0.15 then return end
+        fly.toggleTS = now
+        setEnabled(not fly.enabled)
     end
 
-    --------------------------------------------------------------------
-    -- UI
-    --------------------------------------------------------------------
-    local sec = tab:AddSection({ Name = "Car Fly (Multi-Mode)" })
-
-    sec:AddButton({ Name = "Mode A – LV + Hover (empfohlen)", Callback = function() switchMode("A") end })
-    sec:AddButton({ Name = "Mode B – Δv Impulse (ApplyImpulse)", Callback = function() switchMode("B") end })
-    sec:AddButton({ Name = "Mode C – Legacy Body* (riskant)", Callback = function() switchMode("C") end })
-
-    sec:AddToggle({
-        Name = "Fly Toggle",
+    local sec = tab:AddSection({ Name = "Car Fly" })
+    fly.uiToggle = sec:AddToggle({
+        Name = "Enable Car Fly (nur im Auto)",
         Default = false,
         Callback = function(v) setEnabled(v) end
     })
-
     sec:AddBind({
-        Name = "Toggle Key (X)",
+        Name = "Toggle Key",
         Default = Enum.KeyCode.X,
         Hold = false,
         Callback = function() toggle() end
     })
-
+    sec:AddToggle({
+        Name = "Safe Fly (0.5s bremsen/sinken alle 6s)",
+        Default = false,
+        Callback = function(v) fly.safeOn = v end
+    })
+    sec:AddToggle({
+        Name = "Mobile Panel",
+        Default = false,
+        Callback = function(v) if MobileFlyGui then MobileFlyGui.Enabled = v end end
+    })
     sec:AddSlider({
         Name = "Speed",
         Min = 10, Max = 300, Increment = 5,
@@ -265,10 +312,8 @@ return function(SV, tab, OrionLib)
         Callback = function(v) fly.speed = math.floor(v) end
     })
 
-    -- Sicherheitsnetz: aus wenn du den Sitz verlässt (ohne TP)
+    -- Safety: Auto-off, wenn du nicht mehr sitzt
     RunService.Heartbeat:Connect(function()
-        if fly.enabled and not SV.isSeated() then
-            setEnabled(false)
-        end
+        if fly.enabled and not SV.isSeated() then setEnabled(false) end
     end)
 end
