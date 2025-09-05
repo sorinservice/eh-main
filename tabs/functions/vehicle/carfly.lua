@@ -1,15 +1,6 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp] v3 loaded")
-
-    ----------------------------------------------------------------
-    -- Teleport-basiertes Car Fly (serverweit, anti-cheat-freundlich)
-    -- - Bewegung: kleine PivotTo-Schritte (kein Anchored, keine Velocity/Forces)
-    -- - Nase folgt Kamera
-    -- - Safe Fly (alle 6s 0.5s Boden, danach zurück zur Luftposition)
-    -- - Mobile Fly Panel
-    -- - Kein Boden-Settle beim Ausschalten → Free-Fall
-    ----------------------------------------------------------------
+print("[carfly_tp] v3.1 loaded")
 
     local RunService   = game:GetService("RunService")
     local UserInput    = game:GetService("UserInputService")
@@ -19,18 +10,16 @@ print("[carfly_tp] v3 loaded")
 
     -- ================== Tuning ==================
     local DEFAULT_SPEED       = 130
-    local POS_LERP            = 0.35     -- Positionsglättung (0..1 pro Frame) → smoother Flug
-    local START_UP_NUDGE      = 2.0      -- kleiner Lift-Off beim Aktivieren
-    local MIN_CLEARANCE       = 2.25     -- mind. Abstand zur Bodenoberfläche beim Bewegen
-    local CLEARANCE_PROBE     = 6        -- Raycast-Tiefe, um Ground-Nähe zu sehen
+    local POS_LERP            = 0.35
+    local START_UP_NUDGE      = 2.0
+    local MIN_CLEARANCE       = 2.25
+    local CLEARANCE_PROBE     = 6
 
-    local SAFE_PERIOD         = 6.0      -- alle 6s
-    local SAFE_HOLD           = 0.5      -- 0.5s am Boden „gehalten“
-    local SAFE_BACK           = true     -- zurück zur Luftposition teleportieren
+    local SAFE_PERIOD         = 6.0
+    local SAFE_HOLD           = 0.5
+    local SAFE_BACK           = true
 
     local TOGGLE_KEY          = Enum.KeyCode.X
-    local UP_KEYS             = {Enum.KeyCode.E, Enum.KeyCode.Space}
-    local DOWN_KEYS           = {Enum.KeyCode.Q, Enum.KeyCode.LeftControl}
 
     -- ================== State ==================
     local fly = {
@@ -41,19 +30,13 @@ print("[carfly_tp] v3 loaded")
         safeOn     = false,
         uiToggle   = nil,
         mobileUI   = nil,
-        hold       = {F=false,B=false,L=false,R=false,U=false,D=false},
-        lastCF     = nil,   -- letzter Luft-CF (für SafeFly-Return & Glättung)
         debounceTS = 0,
+        lastCF     = nil,
     }
 
     -- ================== Helpers ==================
     local function myVehicle() return SV.myVehicleFolder() end
-    local function ensurePP(v)  SV.ensurePrimaryPart(v); return v.PrimaryPart end
-
-    local function keyDown(list)
-        for _,k in ipairs(list) do if UserInput:IsKeyDown(k) then return true end end
-        return false
-    end
+    local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
 
     local function dirInput()
         local dir = Vector3.zero
@@ -68,7 +51,6 @@ print("[carfly_tp] v3 loaded")
         return dir
     end
 
-
     local function groundHitBelow(model, depth)
         local cf = model:GetPivot()
         local params = RaycastParams.new()
@@ -78,14 +60,17 @@ print("[carfly_tp] v3 loaded")
     end
 
     local function withClearance(model, targetPos)
-        -- wenn Boden < MIN_CLEARANCE → Y leicht anheben
         local hit = groundHitBelow(model, CLEARANCE_PROBE)
         if hit then
             local cf      = model:GetPivot()
             local current = cf.Position
             local dist    = (current - hit.Position).Y
             if dist < MIN_CLEARANCE then
-                targetPos = Vector3.new(targetPos.X, math.max(targetPos.Y, hit.Position.Y + MIN_CLEARANCE), targetPos.Z)
+                targetPos = Vector3.new(
+                    targetPos.X,
+                    math.max(targetPos.Y, hit.Position.Y + MIN_CLEARANCE),
+                    targetPos.Z
+                )
             end
         end
         return targetPos
@@ -105,25 +90,20 @@ print("[carfly_tp] v3 loaded")
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
 
-        -- Zielausrichtung: Kamera
-        local curCF   = v:GetPivot()
-        local lookCF  = CFrame.lookAt(curCF.Position, curCF.Position + Camera.CFrame.LookVector)
+        local curCF  = v:GetPivot()
+        local camCF  = Camera.CFrame
 
-        -- Eingabe → Schritt
         local dir = dirInput()
         local stepVec = Vector3.zero
         if dir.Magnitude > 0 then
-            dir     = dir.Unit
+            dir = dir.Unit
             stepVec = dir * (fly.speed * dt)
         end
 
-        -- Zielposition mit Clearance
         local targetPos = curCF.Position + stepVec
         targetPos = withClearance(v, targetPos)
 
-        -- weicher Lerp der Pose (wir lerpen die Position, nicht die Orientierung)
-        local newPos = curCF.Position:Lerp(targetPos, POS_LERP)
-        local newCF  = CFrame.new(newPos, newPos + Camera.CFrame.LookVector)
+        local newCF = CFrame.new(targetPos, targetPos + camCF.LookVector)
 
         v:PivotTo(newCF)
         fly.lastCF = newCF
@@ -148,14 +128,12 @@ print("[carfly_tp] v3 loaded")
                             hit.Position + Vector3.new(0, 2, 0) + Camera.CFrame.LookVector
                         )
 
-                        -- 0.5s am Boden halten (jedes Frame Position festsetzen)
                         local t0 = os.clock()
                         while os.clock() - t0 < SAFE_HOLD and fly.enabled do
                             v:PivotTo(lockCF)
                             RunService.Heartbeat:Wait()
                         end
 
-                        -- zurück zur Luftposition
                         if SAFE_BACK and fly.enabled then
                             v:PivotTo(before)
                             fly.lastCF = before
@@ -182,7 +160,6 @@ print("[carfly_tp] v3 loaded")
             if fly.uiToggle then fly.uiToggle:Set(true) end
             notify("Car Fly", ("Aktiviert (Speed %d)"):format(fly.speed), 2)
         else
-            -- Free-Fall: einfach aufhören, NICHT mehr teleportieren
             fly.enabled = false
             if fly.conn then fly.conn:Disconnect(); fly.conn = nil end
             if fly.safeTask then task.cancel(fly.safeTask); fly.safeTask = nil end
@@ -198,78 +175,8 @@ print("[carfly_tp] v3 loaded")
         setEnabled(not fly.enabled)
     end
 
-    -- ================== Mobile Panel ==================
-    local function spawnMobileFly()
-        local gui = Instance.new("ScreenGui")
-        gui.Name = "Sorin_MobileFly"
-        gui.ResetOnSpawn = false
-        gui.IgnoreGuiInset = true
-        gui.Enabled = false
-        gui.Parent = game:GetService("CoreGui")
-
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.fromOffset(230, 160)
-        frame.Position = UDim2.fromOffset(40, 300)
-        frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
-        frame.Parent = gui
-        Instance.new("UICorner", frame).CornerRadius = UDim.new(0,12)
-
-        local title = Instance.new("TextLabel")
-        title.Size = UDim2.new(1, -10, 0, 22)
-        title.Position = UDim2.fromOffset(10, 6)
-        title.BackgroundTransparency = 1
-        title.Font = Enum.Font.GothamBold
-        title.TextSize = 14
-        title.TextColor3 = Color3.fromRGB(240,240,240)
-        title.TextXAlignment = Enum.TextXAlignment.Left
-        title.Text = "Car Fly"
-        title.Parent = frame
-
-        local function mkBtn(txt, x, y, w, h, key)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.fromOffset(w,h); b.Position = UDim2.fromOffset(x,y)
-            b.Text = txt; b.BackgroundColor3 = Color3.fromRGB(40,40,40)
-            b.TextColor3 = Color3.fromRGB(230,230,230); b.Font = Enum.Font.GothamSemibold; b.TextSize = 14
-            b.Parent = frame; Instance.new("UICorner", b).CornerRadius = UDim.new(0,8)
-            b.MouseButton1Down:Connect(function() fly.hold[key] = true end)
-            b.MouseButton1Up:Connect(function() fly.hold[key] = false end)
-            b.MouseLeave:Connect(function() fly.hold[key] = false end)
-            return b
-        end
-
-        mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(toggle)
-        mkBtn("^",      85, 34, 60, 28, "F")
-        mkBtn("v",      85,100, 60, 28, "B")
-        mkBtn("<<",     15, 67, 60, 28, "L")
-        mkBtn(">>",     155,67, 60, 28, "R")
-        mkBtn("Up",     155,34, 60, 28, "U")
-        mkBtn("Down",   155,100, 60, 28, "D")
-
-        -- drag nur über die Titelzeile
-        local dragging, start, startPos
-        frame.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1
-               and input.Position.Y - frame.AbsolutePosition.Y <= 26 then
-                dragging = true; start = input.Position; startPos = frame.Position
-                input.Changed:Connect(function()
-                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
-                end)
-            end
-        end)
-        UserInput.InputChanged:Connect(function(input)
-            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = input.Position - start
-                frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-
-        return gui
-    end
-    local MobileFlyGui = spawnMobileFly()
-
-    -- ================== UI (minimal) ==================
+    -- ================== UI ==================
     local sec = tab:AddSection({ Name = "Car Fly" })
-
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
@@ -293,14 +200,7 @@ print("[carfly_tp] v3 loaded")
         Callback = function(v) fly.safeOn = v end
     })
 
-    local secM = tab:AddSection({ Name = "Mobile Fly" })
-    secM:AddToggle({
-        Name = "Mobile Fly Panel",
-        Default = false,
-        Callback = function(v) if MobileFlyGui then MobileFlyGui.Enabled = v end end
-    })
-
-    -- Auto-Off, wenn du den Sitz verlässt
+    -- Auto-Off wenn Sitz verlassen
     RunService.Heartbeat:Connect(function()
         if fly.enabled and not SV.isSeated() then
             setEnabled(false)
