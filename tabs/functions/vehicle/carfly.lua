@@ -1,10 +1,16 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v4.7] loaded")
+print("[carfly_tp v4.8] loaded")
 
-    -- TP-only, serverseitig sichtbar
-    -- W/S = vor/zurück; Fahrzeug-YAW folgt Kamera, PITCH steuert NUR die Höhe (kein Vorwärts-Sinkflug)
-    -- Idle-Hard-Lock; SafeFly aktiv (auch im Idle), 0.5s Boden-Lock, exakter Rücksprung, Re-Seat ohne Welds
+    -- TP-only (PivotTo), serverseitig sichtbar
+    -- Steuerung:
+    --   - W/S = vor/zurück
+    --   - Fahrzeug-Ausrichtung folgt der KAMERA inkl. Pitch (voller LookVector)
+    --   - Horizontalbewegung entlang Kamera-Yaw, Vertikal separat aus Pitch (mit Kompensation)
+    --   - Kein Vorwärts-Sinkflug mehr, aber „gefühlt“ gleiche Kameralogik wie zuvor
+    -- SafeFly:
+    --   - Alle 6s Boden-Lock 0.5s, dann exakt zurück
+    --   - Während Lock Movement pausiert, Re-Seat wenn nötig (ohne Welds/Constraints)
 
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
@@ -14,25 +20,30 @@ print("[carfly_tp v4.7] loaded")
     local Camera = SV.Camera
     local notify = SV.notify
 
-    -- ===== Konstanten (ohne UI-Schieber) =====
-    local DEFAULT_SPEED      = 240     -- studs/s
-    local MAX_STEP_DIST      = 4       -- max Teleport pro Substep
-    local MAX_SUBSTEPS       = 18      -- Substeps je Heartbeat
+    ----------------------------------------------------------------
+    -- Tuning (hard-coded, keine UI-Slider – justier hier)
+    ----------------------------------------------------------------
+    local DEFAULT_SPEED       = 240      -- studs/s
+    local MAX_STEP_DIST       = 4        -- max TP je Substep
+    local MAX_SUBSTEPS        = 18       -- Substeps pro Heartbeat (mehr = glatter)
 
-    -- Vorwärts neutral (kein Sinkflug), leichtes Auto-Climb:
-    local NEUTRAL_DOWN_TOL   = 0.08    -- tolerierter negativer Look.Y, der noch als „neutral“ gilt
-    local NEUTRAL_CLIMB_RATE = 16      -- studs/s bei Vorwärts + neutral (sanftes Steigen). 0 = exakt Höhe halten
-    local MIN_ASCENT_RATE    = 36      -- studs/s Mindest-Steigrate bei leicht positivem Pitch
+    -- Pitch→Höhe (gegen „Chasecam schaut leicht nach unten“)
+    local CAM_PITCH_OFFSET    = 0.06     -- additiv zu Look.Y für die Höhenberechnung (0.04–0.10)
+    local NEUTRAL_DEADZONE    = 0.05     -- |Look.Y + Offset| <= deadzone ⇒ „neutral“ (kein Sinken)
+    local NEUTRAL_CLIMB_RATE  = 16       -- studs/s bei W + neutral (0 = exakt Höhe halten)
+    local MIN_ASCENT_RATE     = 36       -- studs/s Mindest-Steigrate bei leicht positivem Pitch
 
     -- SafeFly
-    local SAFE_PERIOD        = 6.0     -- s
-    local SAFE_HOLD          = 0.5     -- s
-    local SAFE_BACK          = true
-    local SAFE_RAY_DEPTH     = 4000
+    local SAFE_PERIOD         = 6.0      -- s
+    local SAFE_HOLD           = 0.5      -- s
+    local SAFE_BACK           = true
+    local SAFE_RAY_DEPTH      = 4000     -- studs
 
-    local TOGGLE_KEY         = Enum.KeyCode.X
+    local TOGGLE_KEY          = Enum.KeyCode.X
 
-    -- ===== State =====
+    ----------------------------------------------------------------
+    -- State
+    ----------------------------------------------------------------
     local fly = {
         enabled   = false,
         speed     = DEFAULT_SPEED,
@@ -45,13 +56,15 @@ print("[carfly_tp v4.7] loaded")
         uiToggle  = nil,
         hold      = {F=false,B=false},
 
-        hoverCF   = nil,   -- Idle-Pose
-        lastAirCF = nil,   -- Rücksprung SafeFly
-        lastYaw   = Vector3.new(1,0,0), -- letzter gültiger Yaw-Richtungsvektor
+        hoverCF   = nil,        -- Idle-Pose
+        lastAirCF = nil,        -- Rücksprung SafeFly
+        lastYaw   = Vector3.new(1,0,0),
         debounceTS= 0,
     }
 
-    -- ===== Helpers =====
+    ----------------------------------------------------------------
+    -- Helpers
+    ----------------------------------------------------------------
     local function myVehicle() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
     local function setNetOwner(v)
@@ -73,7 +86,9 @@ print("[carfly_tp v4.7] loaded")
         return d -- -1,0,+1
     end
 
-    -- ===== Core (Heartbeat + Substeps) =====
+    ----------------------------------------------------------------
+    -- Core (Heartbeat + Substeps)
+    ----------------------------------------------------------------
     local function step(dt)
         if not fly.enabled then return end
         if fly.locking then return end
@@ -87,16 +102,20 @@ print("[carfly_tp v4.7] loaded")
         local curPos = curCF.Position
 
         -- Kamera-Vektoren
-        local camLook = Camera.CFrame.LookVector
-        if camLook.Magnitude < 0.999 then camLook = camLook.Unit end
-        local camYaw  = Vector3.new(camLook.X, 0, camLook.Z)
-        if camYaw.Magnitude < 1e-3 then camYaw = fly.lastYaw else camYaw = camYaw.Unit; fly.lastYaw = camYaw end
-        local ly = camLook.Y
+        local look    = Camera.CFrame.LookVector
+        if look.Magnitude < 0.999 then look = look.Unit end
 
-        -- Idle: Pose halten, nur YAW zur Kamera
+        -- Yaw für horizontale Bewegung (falls Kamera extrem nach oben/unten schaut)
+        local yaw = Vector3.new(look.X, 0, look.Z)
+        if yaw.Magnitude < 1e-3 then yaw = fly.lastYaw else yaw = yaw.Unit; fly.lastYaw = yaw end
+
+        -- Effektiver Pitch (mit Offset), nur für Vertikalberechnung
+        local effY = look.Y + CAM_PITCH_OFFSET
+
+        -- Idle: Position halten, AUSRICHTUNG = volle Kamera (Pitch inklusive)
         if not hasInput() then
             local keepPos = (fly.hoverCF and fly.hoverCF.Position) or curPos
-            local lockCF  = CFrame.new(keepPos, keepPos + camYaw)
+            local lockCF  = CFrame.new(keepPos, keepPos + look)
             v:PivotTo(lockCF)
             fly.lastAirCF = lockCF
             return
@@ -105,63 +124,64 @@ print("[carfly_tp v4.7] loaded")
         local s = dirScalar()
         if s == 0 then
             local keepPos = (fly.hoverCF and fly.hoverCF.Position) or curPos
-            local lockCF  = CFrame.new(keepPos, keepPos + camYaw)
+            local lockCF  = CFrame.new(keepPos, keepPos + look)
             v:PivotTo(lockCF); fly.lastAirCF = lockCF; return
         end
 
-        -- Bewegung: Horizontal entlang camYaw; Vertical separat aus Pitch
-        local totalDist = fly.speed * dt
-        local substeps  = math.clamp(math.ceil(totalDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
-        local stepDist  = totalDist / substeps
-        local neutralClimbStep = (NEUTRAL_CLIMB_RATE * dt) / substeps
-        local minAscStep       = (MIN_ASCENT_RATE     * dt) / substeps
+        -- Bewegung: Horizontal entlang yaw, Vertikal separat aus effY
+        local totalDist   = fly.speed * dt
+        local substeps    = math.clamp(math.ceil(totalDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
+        local stepDist    = totalDist / substeps
+        local neutralClmb = (NEUTRAL_CLIMB_RATE * dt) / substeps
+        local minAscStep  = (MIN_ASCENT_RATE    * dt) / substeps
 
         for _ = 1, substeps do
-            -- horizontal
-            local horiz = camYaw * (stepDist * (s > 0 and 1 or -1))
+            -- Horizontal
+            local horiz  = yaw * (stepDist * (s > 0 and 1 or -1))
             local target = curPos + horiz
 
-            -- vertikal (Pitch-Logik)
+            -- Vertikal
             if s > 0 then
                 -- Vorwärts
-                if ly >= -NEUTRAL_DOWN_TOL and ly <= NEUTRAL_DOWN_TOL then
-                    -- Neutral: Höhe halten oder sanft steigen
+                if math.abs(effY) <= NEUTRAL_DEADZONE then
+                    -- neutral: leicht steigen oder Höhe halten
                     if NEUTRAL_CLIMB_RATE > 0 then
-                        target = Vector3.new(target.X, curPos.Y + neutralClimbStep, target.Z)
+                        target = Vector3.new(target.X, curPos.Y + neutralClmb, target.Z)
                     else
-                        target = Vector3.new(target.X, curPos.Y,                 target.Z)
+                        target = Vector3.new(target.X, curPos.Y,                target.Z)
                     end
-                elseif ly > NEUTRAL_DOWN_TOL then
-                    -- leicht positiv: Mindest-Steigrate durchsetzen
-                    local dY = (ly * stepDist)  -- natürliche Steigrate aus Pitch
+                elseif effY > NEUTRAL_DEADZONE then
+                    -- positiv: Mindest-Steigrate erzwingen
+                    local dY = effY * stepDist
                     if dY < minAscStep then dY = minAscStep end
                     target = Vector3.new(target.X, curPos.Y + dY, target.Z)
                 else
-                    -- deutlich negativ: bewusstes Sinken erlauben
-                    target = Vector3.new(target.X, curPos.Y + (ly * stepDist), target.Z)
+                    -- deutlich negativ: bewusstes Sinken
+                    target = Vector3.new(target.X, curPos.Y + (effY * stepDist), target.Z)
                 end
             else
-                -- Rückwärts
-                if math.abs(ly) <= NEUTRAL_DOWN_TOL then
-                    -- neutral: Höhe halten
+                -- Rückwärts: neutral Höhe halten; sonst Pitch spiegeln (so ist S + runter = hoch)
+                if math.abs(effY) <= NEUTRAL_DEADZONE then
                     target = Vector3.new(target.X, curPos.Y, target.Z)
                 else
-                    -- sonst Pitch folgen (symmetrisch)
-                    target = Vector3.new(target.X, curPos.Y + (-ly * stepDist), target.Z)
+                    target = Vector3.new(target.X, curPos.Y + (-effY * stepDist), target.Z)
                 end
             end
 
-            local newCF = CFrame.new(target, target + camYaw) -- YAW-only Ausrichtung
+            -- Ausrichtung = volle Kamera (Pitch behalten)
+            local newCF = CFrame.new(target, target + look)
             v:PivotTo(newCF)
             curPos = target
         end
 
-        local finalCF = CFrame.new(curPos, curPos + camYaw)
+        local finalCF = CFrame.new(curPos, curPos + look)
         fly.hoverCF   = finalCF
         fly.lastAirCF = finalCF
     end
 
-    -- ===== SafeFly (Idle & Bewegung) =====
+    ----------------------------------------------------------------
+    -- SafeFly (Idle & Bewegung)
+    ----------------------------------------------------------------
     local function startSafeFly()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -177,6 +197,7 @@ print("[carfly_tp v4.7] loaded")
                         local before  = fly.lastAirCF or v:GetPivot()
                         local probeCF = v:GetPivot()
 
+                        -- Raycast nach unten (Fahrzeug selbst ausblenden)
                         local params = RaycastParams.new()
                         params.FilterType = Enum.RaycastFilterType.Blacklist
                         params.FilterDescendantsInstances = {v}
@@ -186,11 +207,20 @@ print("[carfly_tp v4.7] loaded")
                             fly.locking = true
 
                             local base   = Vector3.new(probeCF.Position.X, hit.Position.Y + 2, probeCF.Position.Z)
-                            local lockCF = CFrame.new(base, base + fly.lastYaw)
+                            -- yaw beibehalten, Pitch egal auf Boden
+                            local groundCF = CFrame.new(base, base + fly.lastYaw)
 
+                            -- Sitz/Humanoid merken
+                            local seat = SV.findDriveSeat(v)
+                            local hum  = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+
+                            -- 0.5s Boden-Lock; währenddessen Re-Seat, falls nötig
                             local t0 = os.clock()
                             while os.clock() - t0 < SAFE_HOLD and fly.enabled do
-                                v:PivotTo(lockCF)
+                                v:PivotTo(groundCF)
+                                if seat and hum and seat.Occupant ~= hum then
+                                    pcall(function() seat:Sit(hum) end)
+                                end
                                 RunService.Heartbeat:Wait()
                             end
 
@@ -198,11 +228,10 @@ print("[carfly_tp v4.7] loaded")
                                 v:PivotTo(before)
                                 fly.hoverCF   = before
                                 fly.lastAirCF = before
-                            end
-
-                            if fly.enabled and not seated() then
-                                local seat = SV.findDriveSeat(v)
-                                if seat then SV.sitIn(seat) end
+                                -- nach Rücksprung erneut Sitz sichern
+                                if seat and hum and seat.Occupant ~= hum then
+                                    pcall(function() seat:Sit(hum) end)
+                                end
                             end
 
                             fly.locking = false
@@ -213,7 +242,9 @@ print("[carfly_tp v4.7] loaded")
         end)
     end
 
-    -- ===== Toggle =====
+    ----------------------------------------------------------------
+    -- Toggle
+    ----------------------------------------------------------------
     local function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
@@ -226,9 +257,11 @@ print("[carfly_tp v4.7] loaded")
             local cf = v:GetPivot()
             fly.hoverCF   = cf
             fly.lastAirCF = cf
-            -- initiale Yaw merken
-            local look = Camera.CFrame.LookVector
-            local yaw  = Vector3.new(look.X,0,look.Z); if yaw.Magnitude > 1e-3 then fly.lastYaw = yaw.Unit end
+
+            -- initialen yaw speichern
+            local lk = Camera.CFrame.LookVector
+            local y  = Vector3.new(lk.X,0,lk.Z)
+            if y.Magnitude > 1e-3 then fly.lastYaw = y.Unit end
 
             if fly.hbConn then fly.hbConn:Disconnect() end
             fly.hbConn = RunService.Heartbeat:Connect(step)
@@ -254,8 +287,10 @@ print("[carfly_tp v4.7] loaded")
         setEnabled(not fly.enabled)
     end
 
-    -- ===== UI (minimal) =====
-    local sec = tab:AddSection({ Name = "Car Fly v4.7" })
+    ----------------------------------------------------------------
+    -- UI (nur das Nötige)
+    ----------------------------------------------------------------
+    local sec = tab:AddSection({ Name = "Car Fly v4.8" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
