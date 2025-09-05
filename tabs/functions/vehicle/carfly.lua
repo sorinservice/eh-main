@@ -1,5 +1,6 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
+    print("[carfly v4.9.2] loaded")
     -- Car Fly (TP-based) — precision cam-follow variant
     -- - Moves strictly along camera forward (no force objects, no physics tweaking)
     -- - Orientation locked to camera (uses camera UpVector to prevent roll/sag)
