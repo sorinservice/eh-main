@@ -1,55 +1,50 @@
--- tabs/functions/vehicle/vehicle/carfly.lua
--- Teleport-basierter Car Fly (PivotTo): kamera-ausgerichtet, SafeFly, sanfter Exit,
--- Toggle (X), optional Mobile-Panel-Hooks. Kein Anchoring, keine Velocity-Forces.
+-- Teleport-CarFly v2: PivotTo-Schritte, sauberes Steigen, Boden-Clearance,
+-- Step-Clamp pro Frame (Anti-Flag), sanftes Drehen zur Kamera.
 
 return function(SV, tab, OrionLib)
-    print("fly mit neuer Funktion: Test")
-    local RunService  = game:GetService("RunService")
-    local UserInput   = game:GetService("UserInputService")
-    local Workspace   = game:GetService("Workspace")
-    local Camera      = SV.Camera
+    print("Test2")
+    local RS, UI, WS = game:GetService("RunService"), game:GetService("UserInputService"), game:GetService("Workspace")
+    local Cam = SV.Camera
 
-    -- === Tuning ===
-    local DEFAULT_SPEED    = 130      -- studs/s
-    local TURBO_KEY        = Enum.KeyCode.LeftControl
-    local TURBO_MULT       = 2.5
-    local ROT_LERP         = 0.22     -- wie schnell zur Kamera drehen [0..1]
-    local LAND_SOFT_HEIGHT = 15       -- Exit-Höhe über Boden
-    local SAFE_PERIOD      = 6.0
-    local SAFE_HOLD        = 0.5
-    local WEAK_NOCLIP      = true     -- während Fly CanCollide=false für Parts
+    -- ===== Tuning =====
+    local BASE_SPEED      = 130      -- Grundtempo (stud/s)
+    local ACCEL_LERP      = 0.28     -- wie schnell Zielgeschwindigkeit angenommen wird (0..1 / frame)
+    local TURN_LERP       = 0.22     -- wie schnell zur Kamera gedreht wird
+    local TURBO_KEY       = Enum.KeyCode.LeftControl
+    local TURBO_MULT      = 2.4
+    local CLIMB_RATE      = 85       -- reines Steig-/Sinktempo bei Space/Strg (stud/s)
+    local NEAR_GROUND_BIAS= 12       -- kleiner Up-Bias, wenn sehr bodennah (stud/s)
+    local GROUND_PROBE    = 6        -- Raycast-Tiefe für "sehr nah am Boden" in studs
+    local MAX_STEP        = 8        -- maximale Teleport-Strecke pro Frame (studs)
+    local SAFE_PERIOD     = 6.0
+    local SAFE_HOLD       = 0.5
+    local LAND_HEIGHT     = 15
+    local WEAK_NOCLIP     = true
 
-    -- === State ===
+    -- ===== State =====
     local fly = {
-        enabled   = false,
-        speed     = DEFAULT_SPEED,
-        conn      = nil,
-        safeTask  = nil,
-        safeOn    = false,
-        uiToggle  = nil,
-        lastPivot = nil,
-        toggleTS  = 0,
-        savedCC   = {},                 -- CanCollide restore
-        mobile    = {F=false,B=false,L=false,R=false,U=false,D=false},
+        enabled=false, speed=BASE_SPEED,
+        vel=Vector3.zero, conn=nil, safeTask=nil, safeOn=false,
+        uiToggle=nil, toggleTS=0, savedCC={}
     }
 
-    local function notify(t,m,s) pcall(function()
+    local function note(t,m,s) pcall(function()
         OrionLib:MakeNotification({Name=t, Content=m, Time=s or 3})
     end) end
 
-    -- === Helpers ===
-    local function myVehicle() return SV.myVehicleFolder() end
+    -- ===== helpers =====
+    local function veh() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v and v.PrimaryPart end
 
-    local function groundRay(v, depth)
-        local cf = v:GetPivot()
-        local rp = RaycastParams.new()
-        rp.FilterType = Enum.RaycastFilterType.Blacklist
-        rp.FilterDescendantsInstances = {v}
-        return Workspace:Raycast(cf.Position, Vector3.new(0, -math.max(depth or 1000, 1), 0), rp)
+    local function rayDown(v, depth)
+        local cf=v:GetPivot()
+        local rp=RaycastParams.new()
+        rp.FilterType=Enum.RaycastFilterType.Blacklist
+        rp.FilterDescendantsInstances={v}
+        return WS:Raycast(cf.Position, Vector3.new(0,-math.max(depth,1),0), rp)
     end
 
-    local function pivotModel(v, cf)
+    local function pivotTo(v, cf)
         local ok = pcall(function() v:PivotTo(cf) end)
         if not ok and v.PrimaryPart then
             pcall(function() v:SetPrimaryPartCFrame(cf) end)
@@ -58,70 +53,96 @@ return function(SV, tab, OrionLib)
 
     local function saveCollide(v)
         if not WEAK_NOCLIP then return end
-        fly.savedCC = {}
+        fly.savedCC={}
         for _,d in ipairs(v:GetDescendants()) do
             if d:IsA("BasePart") then
-                fly.savedCC[d] = d.CanCollide
-                d.CanCollide = false
+                fly.savedCC[d]=d.CanCollide
+                d.CanCollide=false
             end
         end
     end
     local function restoreCollide()
         if not WEAK_NOCLIP then return end
         for p,cc in pairs(fly.savedCC) do
-            if p and p.Parent then p.CanCollide = cc end
+            if p and p.Parent then p.CanCollide=cc end
         end
-        fly.savedCC = {}
+        fly.savedCC={}
     end
 
     local function softLand(v)
-        local hit = groundRay(v, 1000)
+        local hit=rayDown(v,1500)
         if hit then
-            local pos  = hit.Position + Vector3.new(0, LAND_SOFT_HEIGHT, 0)
-            local look = Camera.CFrame.LookVector
-            pivotModel(v, CFrame.new(pos, pos + look))
+            local pos=hit.Position + Vector3.new(0,LAND_HEIGHT,0)
+            local look=Cam.CFrame.LookVector
+            pivotTo(v, CFrame.new(pos, pos+look))
         end
     end
 
-    -- === Core step (Teleport) ===
+    -- ===== Kern: Teleport-Step =====
     local function step(dt)
-        if not fly.enabled then return end
-        if not SV.isSeated() then return end
+        if not fly.enabled or not SV.isSeated() then return end
+        local v=veh(); if not v then return end
+        local pp=ensurePP(v); if not pp then return end
 
-        local v = myVehicle(); if not v then return end
-        local pp = ensurePP(v); if not pp then return end
-
-        -- Input → Richtung relativ zur Kamera
-        local dir = Vector3.zero
-        if not UserInput:GetFocusedTextBox() then
-            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.mobile.F then dir += Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.mobile.B then dir -= Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.D) or fly.mobile.R then dir += Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.A) or fly.mobile.L then dir -= Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.Space) or fly.mobile.U then dir += Vector3.new(0,1,0) end
-            if UserInput:IsKeyDown(TURBO_KEY) then dir *= TURBO_MULT end
+        -- Input -> Wunschrichtung relativ zur Kamera
+        local want = Vector3.zero
+        if not UI:GetFocusedTextBox() then
+            if UI:IsKeyDown(Enum.KeyCode.W) then want += Cam.CFrame.LookVector end
+            if UI:IsKeyDown(Enum.KeyCode.S) then want -= Cam.CFrame.LookVector end
+            if UI:IsKeyDown(Enum.KeyCode.D) then want += Cam.CFrame.RightVector end
+            if UI:IsKeyDown(Enum.KeyCode.A) then want -= Cam.CFrame.RightVector end
+            -- vertikal separat: CLIMB_RATE (fühlt sich “kräftiger” an)
+            if UI:IsKeyDown(Enum.KeyCode.Space) then want += Vector3.new(0, CLIMB_RATE / math.max(fly.speed,1), 0) end
+            if UI:IsKeyDown(Enum.KeyCode.LeftControl) then
+                -- LeftCtrl hat doppelte Rolle: Turbo + optional Abwärts (wenn keine Horizontale aktiv)
+                if (want.X == 0 and want.Z == 0) then
+                    want -= Vector3.new(0, CLIMB_RATE / math.max(fly.speed,1), 0)
+                end
+                -- Turbo auf Gesamtrichtung
+                want *= TURBO_MULT
+            end
         end
 
+        -- nahe Boden? leichter Up-Bias, damit die Räder nicht hängen bleiben
+        local near = rayDown(v, GROUND_PROBE)
+        if near and (want.Y >= 0) then
+            want = want + Vector3.new(0, NEAR_GROUND_BIAS / math.max(fly.speed,1), 0)
+        end
+
+        -- Zielgeschwindigkeit (stud/s)
+        local targetVel = Vector3.zero
+        if want.Magnitude > 0 then
+            -- Horizontalanteil proportional zur Speed, Y kommt aus CLIMB_RATE/Bias
+            local horiz = Vector3.new(want.X, 0, want.Z)
+            if horiz.Magnitude > 0 then
+                horiz = horiz.Unit * fly.speed
+            end
+            local vert  = Vector3.new(0, want.Y * fly.speed, 0)
+            targetVel = horiz + vert
+        end
+
+        -- Glätten
+        fly.vel = fly.vel:Lerp(targetVel, math.clamp(ACCEL_LERP, 0, 1))
+
+        -- Schritt berechnen + Clamp (Anti-Flag)
+        local rawStep = fly.vel * dt
+        local mag = rawStep.Magnitude
+        if mag > MAX_STEP then
+            rawStep = rawStep.Unit * MAX_STEP
+        end
+
+        -- sanft zur Kamera drehen
         local cf = v:GetPivot()
-        local newCF = cf
+        local toCam = CFrame.lookAt(cf.Position, cf.Position + Cam.CFrame.LookVector)
+        local rotCF = cf:Lerp(toCam, math.clamp(TURN_LERP, 0, 1))
 
-        -- Drehe Nase zur Kamera (smooth)
-        local lookCF = CFrame.lookAt(cf.Position, cf.Position + Camera.CFrame.LookVector)
-        newCF = cf:Lerp(lookCF, math.clamp(ROT_LERP, 0, 1))
-
-        -- Bewegungsschritt (kein initialer Hoch-TP)
-        if dir.Magnitude > 0 then
-            dir = dir.Unit
-            local stepVec = dir * (fly.speed * dt)
-            local npos = newCF.Position + stepVec
-            newCF = CFrame.new(npos, npos + Camera.CFrame.LookVector)
-        end
-
-        pivotModel(v, newCF)
-        fly.lastPivot = newCF
+        -- Position anwenden
+        local npos = rotCF.Position + rawStep
+        local nextCF = CFrame.new(npos, npos + Cam.CFrame.LookVector)
+        pivotTo(v, nextCF)
     end
 
-    -- === SafeFly: alle 6s kurz an den Boden, 0.5s halten, zurück ===
+    -- ===== SafeFly =====
     local function startSafe()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -130,41 +151,39 @@ return function(SV, tab, OrionLib)
                 else
                     task.wait(SAFE_PERIOD)
                     if not fly.enabled then break end
-                    local v = myVehicle(); if not v then break end
-                    local before = v:GetPivot()
-                    local hit = groundRay(v, 1500)
+                    local v=veh(); if not v then break end
+                    local before=v:GetPivot()
+                    local hit=rayDown(v,1500)
                     if hit then
-                        local lockCF = CFrame.new(
-                            hit.Position + Vector3.new(0, 2, 0),
-                            hit.Position + Vector3.new(0, 2, 0) + Camera.CFrame.LookVector
-                        )
-                        local t0 = os.clock()
-                        while os.clock() - t0 < SAFE_HOLD and fly.enabled do
-                            pivotModel(v, lockCF)
-                            RunService.Heartbeat:Wait()
+                        local lock = CFrame.new(hit.Position + Vector3.new(0,2,0),
+                                                hit.Position + Vector3.new(0,2,0)+Cam.CFrame.LookVector)
+                        local t0=os.clock()
+                        while os.clock()-t0 < SAFE_HOLD and fly.enabled do
+                            pivotTo(v, lock)
+                            RS.Heartbeat:Wait()
                         end
-                        if fly.enabled then pivotModel(v, before) end
+                        if fly.enabled then pivotTo(v, before) end
                     end
                 end
             end
         end)
     end
 
-    -- === Toggle ===
+    -- ===== Toggle =====
     local function setEnabled(on)
         if on == fly.enabled then return end
-        local v = myVehicle()
+        local v=veh()
         if on then
-            if not v then notify("Car Fly","Kein Fahrzeug."); return end
+            if not v then note("Car Fly","Kein Fahrzeug."); return end
             ensurePP(v)
             saveCollide(v)
-            fly.lastPivot = v:GetPivot()
+            fly.vel = Vector3.zero
             if fly.conn then fly.conn:Disconnect() end
-            fly.conn = RunService.RenderStepped:Connect(step)
+            fly.conn = RS.RenderStepped:Connect(step)
             startSafe()
             fly.enabled = true
             if fly.uiToggle then fly.uiToggle:Set(true) end
-            notify("Car Fly", ("Aktiviert (Speed %d)"):format(fly.speed), 2)
+            note("Car Fly", ("Aktiviert (Speed %d)"):format(fly.speed), 2)
         else
             fly.enabled = false
             if fly.conn then fly.conn:Disconnect(); fly.conn=nil end
@@ -172,86 +191,38 @@ return function(SV, tab, OrionLib)
             if v then softLand(v) end
             restoreCollide()
             if fly.uiToggle then fly.uiToggle:Set(false) end
-            notify("Car Fly","Deaktiviert.", 2)
+            note("Car Fly","Deaktiviert.",2)
         end
     end
 
     local function toggle()
-        local now = os.clock()
+        local now=os.clock()
         if now - fly.toggleTS < 0.18 then return end
         fly.toggleTS = now
         setEnabled(not fly.enabled)
     end
 
-    -- === Mobile-Panel Hooks (optional) ===
-    local function spawnMobileFly()
-        local gui = Instance.new("ScreenGui")
-        gui.Name = "Sorin_MobileFly"
-        gui.ResetOnSpawn, gui.IgnoreGuiInset, gui.Enabled = false, true, false
-        gui.Parent = game:GetService("CoreGui")
-
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.fromOffset(230, 160)
-        frame.Position = UDim2.fromOffset(40, 300)
-        frame.BackgroundColor3 = Color3.fromRGB(25,25,25)
-        frame.Parent = gui
-        Instance.new("UICorner", frame).CornerRadius = UDim.new(0,12)
-
-        local function mkBtn(txt, x, y, w, h, key)
-            local b = Instance.new("TextButton")
-            b.Size = UDim2.fromOffset(w,h); b.Position = UDim2.fromOffset(x,y)
-            b.Text = txt; b.BackgroundColor3 = Color3.fromRGB(40,40,40)
-            b.TextColor3 = Color3.fromRGB(230,230,230); b.Font = Enum.Font.GothamSemibold; b.TextSize = 14
-            b.Parent = frame; Instance.new("UICorner", b).CornerRadius = UDim.new(0,8)
-            b.MouseButton1Down:Connect(function() fly.mobile[key] = true end)
-            b.MouseButton1Up:Connect(function() fly.mobile[key] = false end)
-            b.MouseLeave:Connect(function() fly.mobile[key] = false end)
-            return b
-        end
-
-        mkBtn("Toggle", 10, 34, 60, 28, "T").MouseButton1Click:Connect(toggle)
-        mkBtn("^",      85, 34, 60, 28, "F")
-        mkBtn("v",      85,100, 60, 28, "B")
-        mkBtn("<<",     15, 67, 60, 28, "L")
-        mkBtn(">>",     155,67, 60, 28, "R")
-        mkBtn("Up",     155,34, 60, 28, "U")
-        mkBtn("Down",   155,100, 60, 28, "D")
-        return gui
-    end
-    local MobileFlyGui = spawnMobileFly()
-
-    -- === UI (kompakt) ===
-    local sec = tab:AddSection({ Name = "Car Fly (Teleport)" })
+    -- ===== UI =====
+    local sec = tab:AddSection({ Name = "Car Fly (Teleport v2)" })
     fly.uiToggle = sec:AddToggle({
-        Name = "Enable (nur im Auto)",
-        Default = false,
-        Callback = function(v) setEnabled(v) end
+        Name="Enable (nur im Auto)", Default=false,
+        Callback=function(v) setEnabled(v) end
     })
     sec:AddBind({
-        Name = "Toggle Key",
-        Default = Enum.KeyCode.X,
-        Hold = false,
-        Callback = function() toggle() end
+        Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false,
+        Callback=function() toggle() end
     })
     sec:AddToggle({
-        Name = "Safe Fly (alle 6s 0.5s Boden)",
-        Default = false,
-        Callback = function(v) fly.safeOn = v end
-    })
-    sec:AddToggle({
-        Name = "Mobile Panel",
-        Default = false,
-        Callback = function(v) if MobileFlyGui then MobileFlyGui.Enabled = v end end
+        Name="Safe Fly (alle 6s 0.5s Boden)",
+        Default=false, Callback=function(v) fly.safeOn=v end
     })
     sec:AddSlider({
-        Name = "Speed",
-        Min = 10, Max = 300, Increment = 5,
-        Default = DEFAULT_SPEED,
-        Callback = function(v) fly.speed = math.floor(v) end
+        Name="Speed", Min=40, Max=300, Increment=5,
+        Default=BASE_SPEED, Callback=function(v) fly.speed=math.floor(v) end
     })
 
-    -- Auto-off wenn Sitz verlassen
-    RunService.Heartbeat:Connect(function()
+    -- Sitz verlassen => off
+    RS.Heartbeat:Connect(function()
         if fly.enabled and not SV.isSeated() then setEnabled(false) end
     end)
 end
