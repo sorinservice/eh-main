@@ -1,11 +1,9 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-    print("[carfly v4.9.2] loaded")
-    -- Car Fly (TP-based) — precision cam-follow variant
-    -- - Moves strictly along camera forward (no force objects, no physics tweaking)
-    -- - Orientation locked to camera (uses camera UpVector to prevent roll/sag)
-    -- - Optional model-forward alignment so car nose matches camera forward
-    -- - Substep TP for smoothness; SafeFly ground lock with optional return
+    -- Car Fly (TP-based, precise cam-follow)
+    -- - Strictly moves along camera forward; orientation = camera Look+Up
+    -- - One-time model-forward alignment (fixes side-entry / weird forward axes)
+    -- - Substep teleport for smoothness; SafeFly ground lock with optional return
 
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
@@ -19,8 +17,8 @@ return function(SV, tab, OrionLib)
     -- Tuning
     ----------------------------------------------------------------
     local DEFAULT_SPEED   = 260       -- studs/s
-    local MAX_STEP_DIST   = 2.0       -- max TP per substep (smaller = smoother)
-    local MAX_SUBSTEPS    = 32        -- cap substeps per Heartbeat
+    local MAX_STEP_DIST   = 1.25      -- smaller = smoother
+    local MAX_SUBSTEPS    = 48
 
     -- SafeFly
     local SAFE_PERIOD     = 6.0
@@ -29,6 +27,7 @@ return function(SV, tab, OrionLib)
     local SAFE_RAY_DEPTH  = 4000
 
     local TOGGLE_KEY      = Enum.KeyCode.X
+    local REALIGN_KEY     = Enum.KeyCode.R
 
     ----------------------------------------------------------------
     -- State
@@ -47,9 +46,14 @@ return function(SV, tab, OrionLib)
 
         hoverCF    = nil,  -- last stable CF
         lastAirCF  = nil,  -- for SafeFly return
-        alignRot   = nil,  -- model-forward alignment (CFrame rotation only)
+        alignRot   = nil,  -- model-forward alignment (rotation-only)
         debounceTS = 0,
+
+        _didRecal  = false,
     }
+
+    -- Camera samples captured on RenderStepped
+    local lastLook, lastUp
 
     ----------------------------------------------------------------
     -- Helpers
@@ -78,9 +82,25 @@ return function(SV, tab, OrionLib)
         return CFrame.fromMatrix(Vector3.new(), ofs.XVector, ofs.YVector, ofs.ZVector)
     end
 
+    local function calibrateAlign(v)
+        -- wait 1 frame to let the seat/camera settle
+        RunService.RenderStepped:Wait()
+        local cf   = v:GetPivot()
+        local cam  = workspace.CurrentCamera.CFrame
+        local want = CFrame.lookAt(cf.Position, cf.Position + cam.LookVector, cam.UpVector)
+        local rel  = cf:ToObjectSpace(want)
+        fly.alignRot = rotationOnly(rel)
+    end
+
     ----------------------------------------------------------------
     -- Core (Heartbeat + TP substeps)
     ----------------------------------------------------------------
+    -- Read camera on RenderStepped for stable values
+    RunService.RenderStepped:Connect(function()
+        local c = workspace.CurrentCamera.CFrame
+        lastLook, lastUp = c.LookVector, c.UpVector
+    end)
+
     local function step(dt)
         if not fly.enabled or fly.locking then return end
         if not seated() then return end
@@ -92,10 +112,9 @@ return function(SV, tab, OrionLib)
         local curCF  = v:GetPivot()
         local curPos = curCF.Position
 
-        -- Camera basis (strict)
-        local look = Camera.CFrame.LookVector
+        local look = lastLook or Camera.CFrame.LookVector
         if look.Magnitude < 0.999 then look = look.Unit end
-        local up   = Camera.CFrame.UpVector
+        local up   = lastUp   or Camera.CFrame.UpVector
 
         -- Idle: freeze position but match camera orientation exactly
         if not hasInput() then
@@ -107,12 +126,12 @@ return function(SV, tab, OrionLib)
             return
         end
 
-        -- Move strictly along camera forward (no pitch splitting)
-        local s          = dirScalar()
-        local totalDist  = (fly.speed * dt) * (s >= 0 and 1 or -1)
-        local absDist    = math.abs(totalDist)
-        local substeps   = math.clamp(math.ceil(absDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
-        local stepDist   = totalDist / substeps
+        -- Move strictly along the full camera forward vector
+        local s         = dirScalar()
+        local total     = (fly.speed * dt) * (s >= 0 and 1 or -1)
+        local absDist   = math.abs(total)
+        local substeps  = math.clamp(math.ceil(absDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
+        local stepDist  = total / substeps
 
         for _ = 1, substeps do
             local target = curPos + (look * stepDist)
@@ -122,10 +141,9 @@ return function(SV, tab, OrionLib)
             curPos = target
         end
 
-        local finalCF = CFrame.lookAt(curPos, curPos + look, up)
-        if fly.alignRot then finalCF = finalCF * fly.alignRot end
-        fly.hoverCF   = finalCF
-        fly.lastAirCF = finalCF
+        local final = CFrame.lookAt(curPos, curPos + look, up)
+        if fly.alignRot then final = final * fly.alignRot end
+        fly.hoverCF, fly.lastAirCF = final, final
     end
 
     ----------------------------------------------------------------
@@ -155,10 +173,10 @@ return function(SV, tab, OrionLib)
                             fly.locking = true
 
                             local basePos = Vector3.new(probeCF.Position.X, hit.Position.Y + 2, probeCF.Position.Z)
-                            -- Keep current camera yaw; use camera Up for stability
-                            local yawFwd = (Camera.CFrame.LookVector * Vector3.new(1,0,1)).Unit
+                            -- keep yaw from camera, use camera Up for stability
+                            local yawFwd = (workspace.CurrentCamera.CFrame.LookVector * Vector3.new(1,0,1)).Unit
                             if yawFwd.Magnitude < 1e-3 then yawFwd = Vector3.new(0,0,-1) end
-                            local groundCF = CFrame.lookAt(basePos, basePos + yawFwd, Camera.CFrame.UpVector)
+                            local groundCF = CFrame.lookAt(basePos, basePos + yawFwd, workspace.CurrentCamera.CFrame.UpVector)
                             if fly.alignRot then groundCF = groundCF * fly.alignRot end
 
                             local seat = SV.findDriveSeat(v)
@@ -206,10 +224,8 @@ return function(SV, tab, OrionLib)
             fly.hoverCF   = cf
             fly.lastAirCF = cf
 
-            -- Align vehicle forward to camera forward once (model-agnostic)
-            local want     = CFrame.lookAt(cf.Position, cf.Position + Camera.CFrame.LookVector, Camera.CFrame.UpVector)
-            local rel      = cf:ToObjectSpace(want)         -- object-space delta
-            fly.alignRot   = rotationOnly(rel)              -- drop translation, keep pure rotation
+            calibrateAlign(v)              -- initial align
+            fly._didRecal = false          -- allow one re-calibration after first seated()
 
             if fly.hbConn then fly.hbConn:Disconnect() end
             fly.hbConn = RunService.Heartbeat:Connect(step)
@@ -262,9 +278,28 @@ return function(SV, tab, OrionLib)
         Default = true,
         Callback = function(v) fly.safeOn = v end
     })
+    sec:AddBind({
+        Name = "Recalibrate Align",
+        Default = REALIGN_KEY,
+        Hold = false,
+        Callback = function()
+            local v = myVehicle()
+            if v and ensurePP(v) then calibrateAlign(v); notify("Car Fly","Re-aligned.", 2) end
+        end
+    })
 
-    -- Auto-Off when leaving seat
+    -- Auto-Off when leaving seat + first-seat re-alignment
     RunService.Heartbeat:Connect(function()
-        if fly.enabled and not seated() then setEnabled(false) end
+        if fly.enabled then
+            if not seated() then
+                if fly._didRecal then fly._didRecal = false end
+                setEnabled(false)
+            elseif not fly._didRecal then
+                fly._didRecal = true
+                local v = myVehicle(); if v and ensurePP(v) then calibrateAlign(v) end
+            end
+        end
     end)
+
+    print("[carfly v4.9.3] loaded")
 end
