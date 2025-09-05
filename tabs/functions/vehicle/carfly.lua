@@ -1,31 +1,32 @@
--- Teleport-CarFly v2: PivotTo-Schritte, sauberes Steigen, Boden-Clearance,
--- Step-Clamp pro Frame (Anti-Flag), sanftes Drehen zur Kamera.
+-- Teleport-CarFly v2.2 – free-fall on exit, takeoff assist, clearance clamp
+print("[CarFly TP v2.2] loaded")
 
 return function(SV, tab, OrionLib)
-    print("Test2")
     local RS, UI, WS = game:GetService("RunService"), game:GetService("UserInputService"), game:GetService("Workspace")
     local Cam = SV.Camera
 
     -- ===== Tuning =====
-    local BASE_SPEED      = 130      -- Grundtempo (stud/s)
-    local ACCEL_LERP      = 0.28     -- wie schnell Zielgeschwindigkeit angenommen wird (0..1 / frame)
-    local TURN_LERP       = 0.22     -- wie schnell zur Kamera gedreht wird
-    local TURBO_KEY       = Enum.KeyCode.LeftControl
-    local TURBO_MULT      = 2.4
-    local CLIMB_RATE      = 85       -- reines Steig-/Sinktempo bei Space/Strg (stud/s)
-    local NEAR_GROUND_BIAS= 12       -- kleiner Up-Bias, wenn sehr bodennah (stud/s)
-    local GROUND_PROBE    = 6        -- Raycast-Tiefe für "sehr nah am Boden" in studs
-    local MAX_STEP        = 8        -- maximale Teleport-Strecke pro Frame (studs)
-    local SAFE_PERIOD     = 6.0
-    local SAFE_HOLD       = 0.5
-    local LAND_HEIGHT     = 15
-    local WEAK_NOCLIP     = true
+    local BASE_SPEED       = 130      -- stud/s
+    local ACCEL_LERP       = 0.28
+    local TURN_LERP        = 0.22
+    local TURBO_KEY        = Enum.KeyCode.LeftControl
+    local TURBO_MULT       = 2.4
+    local CLIMB_RATE       = 85       -- reines Steigen/Sinken
+    local NEAR_GROUND_BIAS = 12       -- kleiner Up-Bias wenn bodennah
+    local GROUND_PROBE     = 6        -- „sehr nah“?
+    local MIN_CLEARANCE    = 3.5      -- hart einzuhaltende Bodenfreiheit
+    local TAKEOFF_TIME     = 0.35     -- so lange hilft die Takeoff-Assist
+    local MAX_STEP         = 8        -- max. Teleport je Frame (Anti-Flag)
+    local SAFE_PERIOD      = 6.0
+    local SAFE_HOLD        = 0.5
+    local LAND_HEIGHT      = 15       -- (nur für SafeFly-Lock; Exit nutzt free-fall)
+    local WEAK_NOCLIP      = true
 
     -- ===== State =====
     local fly = {
         enabled=false, speed=BASE_SPEED,
         vel=Vector3.zero, conn=nil, safeTask=nil, safeOn=false,
-        uiToggle=nil, toggleTS=0, savedCC={}
+        uiToggle=nil, toggleTS=0, savedCC={}, takeoffUntil=0
     }
 
     local function note(t,m,s) pcall(function()
@@ -35,14 +36,13 @@ return function(SV, tab, OrionLib)
     -- ===== helpers =====
     local function veh() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v and v.PrimaryPart end
-
-    local function rayDown(v, depth)
-        local cf=v:GetPivot()
+    local function rayDownFrom(pos, v, depth)
         local rp=RaycastParams.new()
         rp.FilterType=Enum.RaycastFilterType.Blacklist
         rp.FilterDescendantsInstances={v}
-        return WS:Raycast(cf.Position, Vector3.new(0,-math.max(depth,1),0), rp)
+        return WS:Raycast(pos, Vector3.new(0,-math.max(depth or 1,1),0), rp)
     end
+    local function rayDown(v, depth) return rayDownFrom(v:GetPivot().Position, v, depth) end
 
     local function pivotTo(v, cf)
         local ok = pcall(function() v:PivotTo(cf) end)
@@ -69,41 +69,30 @@ return function(SV, tab, OrionLib)
         fly.savedCC={}
     end
 
-    local function softLand(v)
-        local hit=rayDown(v,1500)
-        if hit then
-            local pos=hit.Position + Vector3.new(0,LAND_HEIGHT,0)
-            local look=Cam.CFrame.LookVector
-            pivotTo(v, CFrame.new(pos, pos+look))
-        end
-    end
-
-    -- ===== Kern: Teleport-Step =====
+    -- ===== Kern: Teleport-Step mit Takeoff & Clearance-Clamp =====
     local function step(dt)
         if not fly.enabled or not SV.isSeated() then return end
         local v=veh(); if not v then return end
         local pp=ensurePP(v); if not pp then return end
 
-        -- Input -> Wunschrichtung relativ zur Kamera
+        -- Eingabe
         local want = Vector3.zero
         if not UI:GetFocusedTextBox() then
             if UI:IsKeyDown(Enum.KeyCode.W) then want += Cam.CFrame.LookVector end
             if UI:IsKeyDown(Enum.KeyCode.S) then want -= Cam.CFrame.LookVector end
             if UI:IsKeyDown(Enum.KeyCode.D) then want += Cam.CFrame.RightVector end
             if UI:IsKeyDown(Enum.KeyCode.A) then want -= Cam.CFrame.RightVector end
-            -- vertikal separat: CLIMB_RATE (fühlt sich “kräftiger” an)
             if UI:IsKeyDown(Enum.KeyCode.Space) then want += Vector3.new(0, CLIMB_RATE / math.max(fly.speed,1), 0) end
-            if UI:IsKeyDown(Enum.KeyCode.LeftControl) then
-                -- LeftCtrl hat doppelte Rolle: Turbo + optional Abwärts (wenn keine Horizontale aktiv)
+            if UI:IsKeyDown(TURBO_KEY) then
                 if (want.X == 0 and want.Z == 0) then
+                    -- gedrückt ohne Horizontale → sinken
                     want -= Vector3.new(0, CLIMB_RATE / math.max(fly.speed,1), 0)
                 end
-                -- Turbo auf Gesamtrichtung
                 want *= TURBO_MULT
             end
         end
 
-        -- nahe Boden? leichter Up-Bias, damit die Räder nicht hängen bleiben
+        -- Bodennähe → Up-Bias
         local near = rayDown(v, GROUND_PROBE)
         if near and (want.Y >= 0) then
             want = want + Vector3.new(0, NEAR_GROUND_BIAS / math.max(fly.speed,1), 0)
@@ -112,11 +101,8 @@ return function(SV, tab, OrionLib)
         -- Zielgeschwindigkeit (stud/s)
         local targetVel = Vector3.zero
         if want.Magnitude > 0 then
-            -- Horizontalanteil proportional zur Speed, Y kommt aus CLIMB_RATE/Bias
-            local horiz = Vector3.new(want.X, 0, want.Z)
-            if horiz.Magnitude > 0 then
-                horiz = horiz.Unit * fly.speed
-            end
+            local horiz = Vector3.new(want.X,0,want.Z)
+            if horiz.Magnitude > 0 then horiz = horiz.Unit * fly.speed end
             local vert  = Vector3.new(0, want.Y * fly.speed, 0)
             targetVel = horiz + vert
         end
@@ -124,25 +110,47 @@ return function(SV, tab, OrionLib)
         -- Glätten
         fly.vel = fly.vel:Lerp(targetVel, math.clamp(ACCEL_LERP, 0, 1))
 
-        -- Schritt berechnen + Clamp (Anti-Flag)
-        local rawStep = fly.vel * dt
-        local mag = rawStep.Magnitude
-        if mag > MAX_STEP then
-            rawStep = rawStep.Unit * MAX_STEP
-        end
+        local cf = v:GetPivot()
 
         -- sanft zur Kamera drehen
-        local cf = v:GetPivot()
         local toCam = CFrame.lookAt(cf.Position, cf.Position + Cam.CFrame.LookVector)
         local rotCF = cf:Lerp(toCam, math.clamp(TURN_LERP, 0, 1))
 
-        -- Position anwenden
+        -- Roh-Schritt
+        local rawStep = fly.vel * dt
+
+        -- Takeoff-Assist (bis MIN_CLEARANCE)
+        if os.clock() < fly.takeoffUntil then
+            local ground = rayDownFrom(rotCF.Position, v, 1500)
+            if ground then
+                local need = (ground.Position.Y + MIN_CLEARANCE) - (rotCF.Position.Y + rawStep.Y)
+                if need > 0 then
+                    local add = math.min(need, MAX_STEP * 0.6)
+                    rawStep = rawStep + Vector3.new(0, add, 0)
+                end
+            end
+        end
+
+        -- Schritt-Clamp
+        local mag = rawStep.Magnitude
+        if mag > MAX_STEP then rawStep = rawStep.Unit * MAX_STEP end
+
+        -- Zielposition + harte Clearance
         local npos = rotCF.Position + rawStep
+        local under = rayDownFrom(npos, v, 1500)
+        if under then
+            local minY = under.Position.Y + MIN_CLEARANCE
+            if npos.Y < minY then
+                local diff = minY - npos.Y
+                npos = npos + Vector3.new(0, math.min(diff, MAX_STEP), 0)
+            end
+        end
+
         local nextCF = CFrame.new(npos, npos + Cam.CFrame.LookVector)
         pivotTo(v, nextCF)
     end
 
-    -- ===== SafeFly =====
+    -- ===== SafeFly (kurz Bodenkontakt, dann zurück) =====
     local function startSafe()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -178,6 +186,7 @@ return function(SV, tab, OrionLib)
             ensurePP(v)
             saveCollide(v)
             fly.vel = Vector3.zero
+            fly.takeoffUntil = os.clock() + TAKEOFF_TIME
             if fly.conn then fly.conn:Disconnect() end
             fly.conn = RS.RenderStepped:Connect(step)
             startSafe()
@@ -188,10 +197,10 @@ return function(SV, tab, OrionLib)
             fly.enabled = false
             if fly.conn then fly.conn:Disconnect(); fly.conn=nil end
             if fly.safeTask then task.cancel(fly.safeTask); fly.safeTask=nil end
-            if v then softLand(v) end
+            -- *** kein Absetzen mehr: free-fall ***
             restoreCollide()
             if fly.uiToggle then fly.uiToggle:Set(false) end
-            note("Car Fly","Deaktiviert.",2)
+            note("Car Fly","Deaktiviert (free fall).",2)
         end
     end
 
@@ -203,25 +212,15 @@ return function(SV, tab, OrionLib)
     end
 
     -- ===== UI =====
-    local sec = tab:AddSection({ Name = "Car Fly (Teleport v2)" })
+    local sec = tab:AddSection({ Name = "Car Fly (Teleport v2.2)" })
     fly.uiToggle = sec:AddToggle({
         Name="Enable (nur im Auto)", Default=false,
         Callback=function(v) setEnabled(v) end
     })
-    sec:AddBind({
-        Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false,
-        Callback=function() toggle() end
-    })
-    sec:AddToggle({
-        Name="Safe Fly (alle 6s 0.5s Boden)",
-        Default=false, Callback=function(v) fly.safeOn=v end
-    })
-    sec:AddSlider({
-        Name="Speed", Min=40, Max=300, Increment=5,
-        Default=BASE_SPEED, Callback=function(v) fly.speed=math.floor(v) end
-    })
+    sec:AddBind({ Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false, Callback=function() toggle() end })
+    sec:AddToggle({ Name="Safe Fly (alle 6s 0.5s Boden)", Default=false, Callback=function(v) fly.safeOn=v end })
+    sec:AddSlider({ Name="Speed", Min=40, Max=300, Increment=5, Default=BASE_SPEED, Callback=function(v) fly.speed=math.floor(v) end })
 
-    -- Sitz verlassen => off
     RS.Heartbeat:Connect(function()
         if fly.enabled and not SV.isSeated() then setEnabled(false) end
     end)
