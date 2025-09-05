@@ -1,15 +1,16 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v3.6] loaded")
+print("[carfly_tp v3.7] loaded")
 
     ----------------------------------------------------------------
-    -- Car Fly v3.6
+    -- Car Fly v3.7
     -- - PivotTo-only (server-visible), durch Wände möglich
     -- - W/S = vor/zurück exakt in Kamera-Richtung (inkl. Pitch)
-    -- - Kein Baselift, kein Hüpfen beim Aktivieren
-    -- - Hover-Stabilisierung: ohne Input bleibt Höhe exakt erhalten
+    -- - Anti-Gravity + Hover-Stabilisierung (PID) → kein Absacken, kein Hochdriften
+    -- - Pitch-Lift nur bei Input (W/S) → präzises Steigen/Sinken per Maus
     -- - Smooth via POS_LERP
-    -- - SafeFly + MobileFly enthalten
+    -- - SafeFly: alle 6s auf Boden locken (0.5s), dann EXAKT zur Luft-Pose zurück
+    -- - MobileFly Panel
     ----------------------------------------------------------------
 
     local RunService = game:GetService("RunService")
@@ -17,29 +18,39 @@ print("[carfly_tp v3.6] loaded")
     local Camera     = SV.Camera
     local notify     = SV.notify
 
-    -- ================== Config ==================
-    local DEFAULT_SPEED   = 130
-    local POS_LERP        = 0.35
-    local MIN_CLEARANCE   = 2.25    -- nur als Boden-Schutz, beeinträchtigt Wände nicht
+    -- ================== Tuning ==================
+    local DEFAULT_SPEED   = 160
+    local POS_LERP        = 0.45          -- Glättung (0..1 pro Frame)
+    local MIN_CLEARANCE   = 2.25          -- nur Boden-Schutz (Wände egal)
     local CLEARANCE_PROBE = 6
 
-    local SAFE_PERIOD = 6.0
-    local SAFE_HOLD   = 0.5
-    local SAFE_BACK   = true
+    -- Hover/PID (gegen Gravitation, ohne Drift)
+    local Kp              = 2.2           -- Proportionalgain für Höhe
+    local Kd              = 1.4           -- Derivative (Dämpfung, Anti-Hüpfen)
+    local GRAV_FEED       = 0.35          -- Feedforward gegen „Schwerkraft-Durchhängen“
+    local PITCH_GAIN      = 0.65          -- Pitch → Steig-/Sinkrate bei W/S
 
-    local TOGGLE_KEY  = Enum.KeyCode.X
+    -- SafeFly
+    local SAFE_PERIOD     = 6.0
+    local SAFE_HOLD       = 0.5
+    local SAFE_BACK       = true
+
+    local TOGGLE_KEY      = Enum.KeyCode.X
 
     -- ================== State ==================
     local fly = {
         enabled    = false,
         speed      = DEFAULT_SPEED,
+        safeOn     = false,
         conn       = nil,
         safeTask   = nil,
-        safeOn     = false,
         uiToggle   = nil,
         mobileUI   = nil,
         hold       = {F=false,B=false},
-        lastCF     = nil,  -- letzte Zielpose (für Hover)
+        lastCF     = nil,       -- letzte gesetzte Pose (Luft)
+        lastAirCF  = nil,       -- explizit vor SafeFly gespeichert
+        hoverY     = nil,       -- Zielhöhe im Hover
+        eY_last    = 0,         -- D-Anteil
         debounceTS = 0,
     }
 
@@ -75,7 +86,6 @@ print("[carfly_tp v3.6] loaded")
     end
 
     local function withClearance(model, targetPos)
-        -- hebt nur minimal an, falls exakt über Boden; Wände werden nicht beeinflusst
         local hit = groundHitBelow(model, CLEARANCE_PROBE)
         if hit then
             local cf   = model:GetPivot()
@@ -96,23 +106,36 @@ print("[carfly_tp v3.6] loaded")
         if not v.PrimaryPart then if not ensurePP(v) then return end end
 
         local curCF = v:GetPivot()
-        local targetPos
+        if fly.hoverY == nil then fly.hoverY = curCF.Y end
 
-        if hasInput() then
-            -- Bewegung exakt entlang Kamera (inkl. Pitch)
-            local dir = dirInput()
-            if dir.Magnitude > 0 then
-                dir = dir.Unit
-                targetPos = curCF.Position + dir * (fly.speed * dt)
-            else
-                targetPos = curCF.Position
-            end
-        else
-            -- HOVER: Höhe beibehalten, keine Drift, kein Fallen
-            local refY = (fly.lastCF and fly.lastCF.Y) or curCF.Y
-            targetPos  = Vector3.new(curCF.X, refY, curCF.Z)
+        -- Vor/Zurück entlang Kamera (inkl. Pitch), KEIN Strafe
+        local forward = Vector3.zero
+        local dir = dirInput()
+        if dir.Magnitude > 0 then
+            forward = dir.Unit * (fly.speed * dt)
         end
 
+        -- Vertikal: 2 Modi
+        local vY = 0
+        if dir.Magnitude > 0 then
+            -- (1) Aktive Steuerung: Pitch steuert Steigen/Sinken
+            local pitchY = Camera.CFrame.LookVector.Y          -- [-1..+1]
+            vY = pitchY * (fly.speed * PITCH_GAIN) * dt
+            -- Hover-Referenz mitnehmen, damit kein „Zurückziehen“ nach Input
+            fly.hoverY = curCF.Y
+            fly.eY_last = 0
+        else
+            -- (2) Hover: PID hält Höhe stabil (kein Hoch-/Runterdriften)
+            local eY = fly.hoverY - curCF.Y                    -- Fehler in studs
+            local dY = (eY - fly.eY_last) / math.max(dt, 1/240)
+            fly.eY_last = eY
+            -- PID + leichtes Feedforward gegen Grav-Durchhängen
+            local corr = (Kp * eY) + (Kd * dY)
+            vY = (corr * dt) + (GRAV_FEED * dt)
+        end
+
+        local stepVec   = forward + Vector3.new(0, vY, 0)
+        local targetPos = curCF.Position + stepVec
         targetPos = withClearance(v, targetPos)
 
         local newPos = curCF.Position:Lerp(targetPos, POS_LERP)
@@ -120,6 +143,7 @@ print("[carfly_tp v3.6] loaded")
 
         v:PivotTo(newCF)
         fly.lastCF = newCF
+        fly.lastAirCF = newCF
     end
 
     -- ================== Safe Fly ==================
@@ -127,27 +151,34 @@ print("[carfly_tp v3.6] loaded")
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
             while fly.enabled do
-                if not fly.safeOn then task.wait(0.25)
+                if not fly.safeOn then
+                    task.wait(0.25)
                 else
                     task.wait(SAFE_PERIOD)
                     if not fly.enabled then break end
                     local v = myVehicle(); if not v then break end
-                    local before = fly.lastCF or v:GetPivot()
 
+                    -- EXAKTE Luft-Pose sichern
+                    local before = fly.lastAirCF or v:GetPivot()
+
+                    -- Boden finden und 0.5s „locken“
                     local hit = groundHitBelow(v, 1500)
                     if hit then
-                        local lockCF = CFrame.new(
-                            hit.Position + Vector3.new(0, 2, 0),
-                            hit.Position + Vector3.new(0, 2, 0) + Camera.CFrame.LookVector
-                        )
+                        local base = hit.Position + Vector3.new(0, 2, 0)
+                        local lockCF = CFrame.new(base, base + Camera.CFrame.LookVector)
+
                         local t0 = os.clock()
                         while os.clock() - t0 < SAFE_HOLD and fly.enabled do
                             v:PivotTo(lockCF)
                             RunService.Heartbeat:Wait()
                         end
+
                         if SAFE_BACK and fly.enabled then
                             v:PivotTo(before)
-                            fly.lastCF = before
+                            fly.lastCF   = before
+                            fly.lastAirCF= before
+                            fly.hoverY   = before.Y
+                            fly.eY_last  = 0
                         end
                     end
                 end
@@ -163,8 +194,13 @@ print("[carfly_tp v3.6] loaded")
         if on then
             if not v then notify("Car Fly","Kein Fahrzeug."); return end
             if not v.PrimaryPart then if not ensurePP(v) then notify("Car Fly","Kein PrimaryPart."); return end end
-            -- Kein Lift-Off → keine Y-Spikes beim Start
-            fly.lastCF = v:GetPivot()
+
+            local cf = v:GetPivot()
+            fly.lastCF    = cf
+            fly.lastAirCF = cf
+            fly.hoverY    = cf.Y
+            fly.eY_last   = 0
+
             if fly.conn then fly.conn:Disconnect() end
             fly.conn = RunService.RenderStepped:Connect(step)
             startSafeFly()
@@ -235,7 +271,7 @@ print("[carfly_tp v3.6] loaded")
     local MobileFlyGui = spawnMobileFly()
 
     -- ================== UI ==================
-    local sec = tab:AddSection({ Name = "Car Fly v3.6" })
+    local sec = tab:AddSection({ Name = "Car Fly v3.7" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
@@ -249,7 +285,7 @@ print("[carfly_tp v3.6] loaded")
     })
     sec:AddSlider({
         Name = "Speed",
-        Min = 10, Max = 300, Increment = 5,
+        Min = 10, Max = 350, Increment = 5,
         Default = DEFAULT_SPEED,
         Callback = function(v) fly.speed = math.floor(v) end
     })
