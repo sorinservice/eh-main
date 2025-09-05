@@ -1,12 +1,14 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v5.0] loaded")
+print("[carfly_tp v5.1] loaded")
 
-    -- Ziel: W/S = vor/zurück; volle Kamera-Ausrichtung fürs Auto,
-    --        ABER keine Höhenänderung, wenn du „geradeaus“ schaust.
-    --        Vertikal nur bei deutlichem Pitch (oberhalb Deadzone).
-    --        TP-only via Model:PivotTo (serverseitig sichtbar).
-    --        SafeFly greift auch im Idle; Re-Seat ohne Welds.
+    -- TP-only via Model:PivotTo (serverweit sichtbar)
+    -- Steuerung:
+    --   - W/S = vor/zurück (horizontal entlang Kamera-Yaw)
+    --   - Höhe NUR bei deutlichem Pitch (über Schwelle), linear skaliert, gedämpft
+    --   - Ausrichtung = volle Kamera (inkl. Pitch), aber Vertikalgeschwindigkeit separat geregelt
+    -- SafeFly:
+    --   - alle 6s 0.5s Boden-Lock, danach exakter Rücksprung; Re-Seat ohne Welds
 
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
@@ -20,12 +22,14 @@ print("[carfly_tp v5.0] loaded")
     local MAX_STEP_DIST        = 4
     local MAX_SUBSTEPS         = 18
 
-    -- Vertikalsteuerung: KEIN Offset mehr → „geradeaus“ = 0
-    local NEUTRAL_DEADZONE     = 0.06   -- |look.Y| ≤ deadzone ⇒ keine Höhenänderung
-    local MIN_ASCENT_RATE      = 0      -- 0 = kein erzwungenes Steigen bei leicht positivem Pitch
-    local NEUTRAL_CLIMB_RATE   = 0      -- 0 = exakt Höhe halten in Neutral (kein Auto-Climb)
+    -- Vertikalsteuerung (gegen „steiler Abflug“):
+    -- nur bei deutlichem Pitch > PITCH_DEADZONE (in Radiant) wird Höhe geändert
+    -- Vertikalgeschwindigkeit = speed * VERT_GAIN * blend(pitch)
+    local PITCH_DEADZONE       = 0.25   -- ~14.3°; erhöhe für „erst später klettern“
+    local VERT_GAIN            = 0.40   -- 0.25–0.55 empfohlen; senke für weniger Steig-/Sinkrate
+    local VERT_EXP             = 1.00   -- 1=linear, >1 = weicher Start
 
-    -- Boden-Clearance (nur gegen Einsacken am Boden)
+    -- Bodenabstand, verhindert Einsacken auf Terrain
     local GROUND_CLAMP         = true
     local GROUND_CLEARANCE     = 2.4
     local CLEARANCE_PROBE      = 12
@@ -87,6 +91,14 @@ print("[carfly_tp v5.0] loaded")
         return pos
     end
 
+    -- blend-Funktion für Pitch → [0..1]
+    local function pitchBlend(absPitch)
+        if absPitch <= PITCH_DEADZONE then return 0 end
+        local t = (absPitch - PITCH_DEADZONE) / (math.pi/2 - PITCH_DEADZONE)
+        if t < 0 then t = 0 elseif t > 1 then t = 1 end
+        return t ^ VERT_EXP
+    end
+
     -- ===== Core =====
     local function step(dt)
         if not fly.enabled or fly.locking or not seated() then return end
@@ -105,7 +117,7 @@ print("[carfly_tp v5.0] loaded")
         local yaw = Vector3.new(look.X, 0, look.Z)
         if yaw.Magnitude < 1e-3 then yaw = fly.lastYaw else yaw = yaw.Unit; fly.lastYaw = yaw end
 
-        -- Idle → Pose halten, volle Kameraausrichtung
+        -- Idle → Position halten, volle Kameraausrichtung
         if not hasInput() then
             local keepPos = (fly.hoverCF and fly.hoverCF.Position) or curPos
             local lockCF  = CFrame.new(keepPos, keepPos + look)
@@ -121,33 +133,20 @@ print("[carfly_tp v5.0] loaded")
             v:PivotTo(lockCF); fly.lastAirCF = lockCF; return
         end
 
-        local totalDist   = fly.speed * dt
-        local substeps    = math.clamp(math.ceil(totalDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
-        local stepDist    = totalDist / substeps
-        local neutralClmb = (NEUTRAL_CLIMB_RATE * dt) / substeps
-        local minAscStep  = (MIN_ASCENT_RATE    * dt) / substeps
+        local totalDist = fly.speed * dt
+        local substeps  = math.clamp(math.ceil(totalDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
+        local stepDist  = totalDist / substeps
+
+        -- Vertikalgeschwindigkeit (pro Sekunde), gedämpft nach Pitch
+        local absPitch  = math.asin(math.clamp(look.Y, -1, 1)) -- [-pi/2..pi/2]
+        local blend     = pitchBlend(math.abs(absPitch))
+        local vertPerSec= fly.speed * VERT_GAIN * blend
+        if look.Y < 0 then vertPerSec = -vertPerSec end
+        local vertPerStep = (vertPerSec * dt) / substeps
 
         for _ = 1, substeps do
-            -- horizontal Move
             local horiz  = yaw * (stepDist * (s > 0 and 1 or -1))
-            local target = curPos + horiz
-
-            -- vertikal nur bei Pitch außerhalb Deadzone
-            local ly = look.Y
-            local dY = 0
-            if math.abs(ly) <= NEUTRAL_DEADZONE then
-                -- neutral: Höhe exakt halten (oder sanft steigen, hier = 0)
-                dY = neutralClmb -- 0 mit obigem Tuning
-            elseif ly > NEUTRAL_DEADZONE then
-                -- positiv: Steigen um (ly - deadzone)
-                dY = (ly - NEUTRAL_DEADZONE) * stepDist
-                if dY < minAscStep then dY = minAscStep end -- nur wenn >0 gesetzt; bei 0 bleibt 0
-            else
-                -- negativ: Sinken um (ly + deadzone)  (ly ist negativ)
-                dY = (ly + NEUTRAL_DEADZONE) * stepDist
-            end
-
-            target = Vector3.new(target.X, curPos.Y + dY, target.Z)
+            local target = curPos + horiz + Vector3.new(0, vertPerStep, 0)
             target = enforceClearance(v, target)
 
             local newCF = CFrame.new(target, target + look) -- volle Kameraausrichtung
@@ -258,7 +257,7 @@ print("[carfly_tp v5.0] loaded")
         setEnabled(not fly.enabled)
     end
 
-    local sec = tab:AddSection({ Name = "Car Fly v5.0" })
+    local sec = tab:AddSection({ Name = "Car Fly v5.1" })
     fly.uiToggle = sec:AddToggle({ Name = "Enable Car Fly (nur im Auto)", Default = false, Callback = function(v) setEnabled(v) end })
     sec:AddBind({ Name = "Car Fly Toggle Key", Default = TOGGLE_KEY, Hold = false, Callback = function() toggle() end })
     sec:AddSlider({ Name = "Speed", Min = 10, Max = 520, Increment = 5, Default = DEFAULT_SPEED, Callback = function(v) fly.speed = math.floor(v) end })
