@@ -1,12 +1,13 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v3.3] loaded")
+print("[carfly_tp v3.4] loaded")
 
     ----------------------------------------------------------------
-    -- Car Fly v3.3
+    -- Car Fly v3.4
     -- - Teleport-based (PivotTo), server-visible
-    -- - W/S = forward/back, direction via camera
+    -- - W/S = forward/back, camera controls yaw & pitch
     -- - Smooth with POS_LERP
+    -- - Pitch-based vertical compensation (anti-gravity drift)
     -- - Safe Fly (periodic ground settle)
     -- - Mobile Fly UI
     ----------------------------------------------------------------
@@ -38,7 +39,7 @@ print("[carfly_tp v3.3] loaded")
         safeOn     = false,
         uiToggle   = nil,
         mobileUI   = nil,
-        hold       = {F=false,B=false,U=false,D=false},
+        hold       = {F=false,B=false},
         lastCF     = nil,
         debounceTS = 0,
     }
@@ -94,13 +95,17 @@ print("[carfly_tp v3.3] loaded")
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
 
-        local curCF  = v:GetPivot()
-        local dir    = dirInput()
+        local curCF = v:GetPivot()
+        local dir   = dirInput()
         local stepVec = Vector3.zero
 
         if dir.Magnitude > 0 then
-            dir     = dir.Unit
+            dir = dir.Unit
             stepVec = dir * (fly.speed * dt)
+
+            -- Pitch-based vertical lift (anti-gravity drift)
+            local pitch = Camera.CFrame.LookVector.Y
+            stepVec += Vector3.new(0, pitch * fly.speed * 0.5 * dt, 0)
         end
 
         local targetPos = curCF.Position + stepVec
@@ -227,7 +232,7 @@ print("[carfly_tp v3.3] loaded")
     local MobileFlyGui = spawnMobileFly()
 
     -- ================== UI ==================
-    local sec = tab:AddSection({ Name = "Car Fly" })
+    local sec = tab:AddSection({ Name = "Car Fly v3.4" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
