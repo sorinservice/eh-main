@@ -238,5 +238,5 @@ return function(SV, tab, OrionLib)
         if fly.enabled and not seated() then setEnabled(false) end
     end)
 
-    print("[carfly v4.9.6] loaded")
+    print("[carfly v5.0.1] loaded")
 end
