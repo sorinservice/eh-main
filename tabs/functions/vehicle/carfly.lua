@@ -1,6 +1,6 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v4.8.4] loaded")
+print("[carfly v4.8.4] loaded")
 
     -- TP-only (PivotTo), serverseitig sichtbar
     -- Steuerung:
