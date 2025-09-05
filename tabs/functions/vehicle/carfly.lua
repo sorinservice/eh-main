@@ -1,13 +1,13 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v3.4] loaded")
+print("[carfly_tp v3.5] loaded")
 
     ----------------------------------------------------------------
-    -- Car Fly v3.4
+    -- Car Fly v3.5
     -- - Teleport-based (PivotTo), server-visible
-    -- - W/S = forward/back, camera controls yaw & pitch
-    -- - Smooth with POS_LERP
-    -- - Pitch-based vertical compensation (anti-gravity drift)
+    -- - Hover lift: stays in air when idle
+    -- - Pitch-based vertical control with camera
+    -- - Smooth flight via POS_LERP
     -- - Safe Fly (periodic ground settle)
     -- - Mobile Fly UI
     ----------------------------------------------------------------
@@ -29,6 +29,10 @@ print("[carfly_tp v3.4] loaded")
     local SAFE_BACK   = true
 
     local TOGGLE_KEY  = Enum.KeyCode.X
+
+    -- Hover tuning
+    local BASE_LIFT   = 1.0   -- constant lift factor
+    local PITCH_LIFT  = 0.6   -- pitch multiplier
 
     -- ================== State ==================
     local fly = {
@@ -102,11 +106,14 @@ print("[carfly_tp v3.4] loaded")
         if dir.Magnitude > 0 then
             dir = dir.Unit
             stepVec = dir * (fly.speed * dt)
-
-            -- Pitch-based vertical lift (anti-gravity drift)
-            local pitch = Camera.CFrame.LookVector.Y
-            stepVec += Vector3.new(0, pitch * fly.speed * 0.5 * dt, 0)
         end
+
+        -- Hover lift (keeps car floating)
+        stepVec += Vector3.new(0, BASE_LIFT * fly.speed * dt, 0)
+
+        -- Pitch-based lift (mouse control)
+        local pitch = Camera.CFrame.LookVector.Y
+        stepVec += Vector3.new(0, pitch * fly.speed * PITCH_LIFT * dt, 0)
 
         local targetPos = curCF.Position + stepVec
         targetPos = withClearance(v, targetPos)
@@ -232,7 +239,7 @@ print("[carfly_tp v3.4] loaded")
     local MobileFlyGui = spawnMobileFly()
 
     -- ================== UI ==================
-    local sec = tab:AddSection({ Name = "Car Fly v3.4" })
+    local sec = tab:AddSection({ Name = "Car Fly v3.5" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
