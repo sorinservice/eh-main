@@ -6,9 +6,6 @@ return function(SV, tab, OrionLib)
         local vf = SV.myVehicleFolder()
         if vf and SV.CFG and SV.CFG.plateText ~= "" then
             SV.applyPlateTextTo(vf, SV.CFG.plateText)
-            notify("Vehicle","Kennzeichen angewandt (lokal).",2)
-        else
-            notify("Vehicle","Kein Fahrzeug / leerer Text.",2)
         end
     end
 
@@ -25,7 +22,7 @@ return function(SV, tab, OrionLib)
             end
         end
     })
-    sec:AddButton({ Name = "Kennzeichen anwenden (aktuelles Fahrzeug)", Callback = applyPlateToCurrent })
+    sec:AddButton({ Name = "Kennzeichen anwenden", Callback = applyPlateToCurrent })
 
     -- Auto-apply bei neuen Fahrzeugen
     task.spawn(function()
