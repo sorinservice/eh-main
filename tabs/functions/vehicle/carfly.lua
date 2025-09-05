@@ -1,6 +1,6 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v4.8] loaded")
+print("[carfly_tp v4.8.1] loaded")
 
     -- TP-only (PivotTo), serverseitig sichtbar
     -- Steuerung:
@@ -28,10 +28,10 @@ print("[carfly_tp v4.8] loaded")
     local MAX_SUBSTEPS        = 18       -- Substeps pro Heartbeat (mehr = glatter)
 
     -- Pitch→Höhe (gegen „Chasecam schaut leicht nach unten“)
-    local CAM_PITCH_OFFSET    = 0.06     -- additiv zu Look.Y für die Höhenberechnung (0.04–0.10)
+    local CAM_PITCH_OFFSET    = 0.08     -- additiv zu Look.Y für die Höhenberechnung (0.04–0.10)
     local NEUTRAL_DEADZONE    = 0.05     -- |Look.Y + Offset| <= deadzone ⇒ „neutral“ (kein Sinken)
     local NEUTRAL_CLIMB_RATE  = 16       -- studs/s bei W + neutral (0 = exakt Höhe halten)
-    local MIN_ASCENT_RATE     = 36       -- studs/s Mindest-Steigrate bei leicht positivem Pitch
+    local MIN_ASCENT_RATE     = 42       -- studs/s Mindest-Steigrate bei leicht positivem Pitch
 
     -- SafeFly
     local SAFE_PERIOD         = 6.0      -- s
