@@ -1,6 +1,6 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp] loaded")
+print("[carfly_tp] v3 loaded")
 
     ----------------------------------------------------------------
     -- Teleport-basiertes Car Fly (serverweit, anti-cheat-freundlich)
@@ -58,15 +58,16 @@ print("[carfly_tp] loaded")
     local function dirInput()
         local dir = Vector3.zero
         if not UserInput:GetFocusedTextBox() then
-            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.hold.F then dir += Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B then dir -= Camera.CFrame.LookVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.D) or fly.hold.R then dir += Camera.CFrame.RightVector end
-            if UserInput:IsKeyDown(Enum.KeyCode.A) or fly.hold.L then dir -= Camera.CFrame.RightVector end
-            if keyDown(UP_KEYS) or fly.hold.U then dir += Vector3.new(0,1,0) end
-            if keyDown(DOWN_KEYS) or fly.hold.D then dir -= Vector3.new(0,1,0) end
+            if UserInput:IsKeyDown(Enum.KeyCode.W) then
+                dir += Camera.CFrame.LookVector
+            end
+            if UserInput:IsKeyDown(Enum.KeyCode.S) then
+                dir -= Camera.CFrame.LookVector
+            end
         end
         return dir
     end
+
 
     local function groundHitBelow(model, depth)
         local cf = model:GetPivot()
