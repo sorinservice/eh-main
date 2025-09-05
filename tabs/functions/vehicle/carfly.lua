@@ -1,24 +1,22 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-    -- Car Fly (TP-based, precise cam-follow)
-    -- - Strictly moves along camera forward; orientation = camera Look+Up
-    -- - One-time model-forward alignment (fixes side-entry / weird forward axes)
-    -- - Substep teleport for smoothness; SafeFly ground lock with optional return
+    -- TP Car Fly — hard cam-lock, anti-sag lift, no pre-latched camera
 
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
     local LP         = Players.LocalPlayer
 
-    local Camera  = SV.Camera
-    local notify  = SV.notify
+    local notify = SV.notify
 
-    ----------------------------------------------------------------
-    -- Tuning
-    ----------------------------------------------------------------
-    local DEFAULT_SPEED   = 260       -- studs/s
-    local MAX_STEP_DIST   = 1.25      -- smaller = smoother
+    -- ===== Tuning =====
+    local DEFAULT_SPEED   = 260
+    local MAX_STEP_DIST   = 1.0
     local MAX_SUBSTEPS    = 48
+
+    -- slight upward bias to counter chase-cam's natural downward pitch
+    local PITCH_LIFT      = 0.06   -- 0.04–0.10 typical
+    local NEUTRAL_CLAMP   = -0.02  -- if look.Y is slightly below 0, clamp to 0 (removes tiny sink)
 
     -- SafeFly
     local SAFE_PERIOD     = 6.0
@@ -27,37 +25,16 @@ return function(SV, tab, OrionLib)
     local SAFE_RAY_DEPTH  = 4000
 
     local TOGGLE_KEY      = Enum.KeyCode.X
-    local REALIGN_KEY     = Enum.KeyCode.R
 
-    ----------------------------------------------------------------
-    -- State
-    ----------------------------------------------------------------
+    -- ===== State =====
     local fly = {
-        enabled    = false,
-        speed      = DEFAULT_SPEED,
-        safeOn     = true,
-
-        hbConn     = nil,
-        safeTask   = nil,
-        locking    = false,
-
-        uiToggle   = nil,
-        hold       = {F=false, B=false},
-
-        hoverCF    = nil,  -- last stable CF
-        lastAirCF  = nil,  -- for SafeFly return
-        alignRot   = nil,  -- model-forward alignment (rotation-only)
-        debounceTS = 0,
-
-        _didRecal  = false,
+        enabled=false, speed=DEFAULT_SPEED, safeOn=true,
+        hbConn=nil, safeTask=nil, locking=false,
+        uiToggle=nil, hold={F=false,B=false},
+        hoverCF=nil, lastAirCF=nil, debounceTS=0,
     }
 
-    -- Camera samples captured on RenderStepped
-    local lastLook, lastUp
-
-    ----------------------------------------------------------------
-    -- Helpers
-    ----------------------------------------------------------------
+    -- ===== Helpers =====
     local function myVehicle() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
     local function setNetOwner(v) pcall(function() if v and v.PrimaryPart then v.PrimaryPart:SetNetworkOwner(LP) end end) end
@@ -69,38 +46,24 @@ return function(SV, tab, OrionLib)
             or UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B
     end
     local function dirScalar()
-        local d = 0
+        local d=0
         if not UserInput:GetFocusedTextBox() then
-            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.hold.F then d += 1 end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B then d -= 1 end
+            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.hold.F then d+=1 end
+            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B then d-=1 end
         end
-        return d -- -1,0,+1
+        return d
     end
 
-    -- Build a pure-rotation CFrame from an object-space delta (removes translation)
-    local function rotationOnly(ofs)
-        return CFrame.fromMatrix(Vector3.new(), ofs.XVector, ofs.YVector, ofs.ZVector)
+    local function hardPivot(v, cf)
+        local pp = v.PrimaryPart
+        if pp then
+            pp.AssemblyLinearVelocity  = Vector3.zero
+            pp.AssemblyAngularVelocity = Vector3.zero
+        end
+        v:PivotTo(cf)
     end
 
-    local function calibrateAlign(v)
-        -- wait 1 frame to let the seat/camera settle
-        RunService.RenderStepped:Wait()
-        local cf   = v:GetPivot()
-        local cam  = workspace.CurrentCamera.CFrame
-        local want = CFrame.lookAt(cf.Position, cf.Position + cam.LookVector, cam.UpVector)
-        local rel  = cf:ToObjectSpace(want)
-        fly.alignRot = rotationOnly(rel)
-    end
-
-    ----------------------------------------------------------------
-    -- Core (Heartbeat + TP substeps)
-    ----------------------------------------------------------------
-    -- Read camera on RenderStepped for stable values
-    RunService.RenderStepped:Connect(function()
-        local c = workspace.CurrentCamera.CFrame
-        lastLook, lastUp = c.LookVector, c.UpVector
-    end)
-
+    -- ===== Core =====
     local function step(dt)
         if not fly.enabled or fly.locking then return end
         if not seated() then return end
@@ -109,46 +72,48 @@ return function(SV, tab, OrionLib)
         if not v.PrimaryPart then if not ensurePP(v) then return end end
         setNetOwner(v)
 
+        -- read *fresh* camera every frame (no pre-latch)
+        local cam   = workspace.CurrentCamera
+        local look  = cam.CFrame.LookVector
+        if look.Magnitude < 0.999 then look = look.Unit end
+        local up    = cam.CFrame.UpVector
+
         local curCF  = v:GetPivot()
         local curPos = curCF.Position
 
-        local look = lastLook or Camera.CFrame.LookVector
-        if look.Magnitude < 0.999 then look = look.Unit end
-        local up   = lastUp   or Camera.CFrame.UpVector
-
-        -- Idle: freeze position but match camera orientation exactly
         if not hasInput() then
-            local keepPos = (fly.hoverCF and fly.hoverCF.Position) or curPos
-            local lockCF  = CFrame.lookAt(keepPos, keepPos + look, up)
-            if fly.alignRot then lockCF = lockCF * fly.alignRot end
-            v:PivotTo(lockCF)
-            fly.lastAirCF = lockCF
+            local keep = (fly.hoverCF and fly.hoverCF.Position) or curPos
+            hardPivot(v, CFrame.lookAt(keep, keep + look, up))
+            fly.lastAirCF = v:GetPivot()
             return
         end
 
-        -- Move strictly along the full camera forward vector
-        local s         = dirScalar()
-        local total     = (fly.speed * dt) * (s >= 0 and 1 or -1)
-        local absDist   = math.abs(total)
-        local substeps  = math.clamp(math.ceil(absDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
-        local stepDist  = total / substeps
+        local s        = dirScalar()
+        local total    = (fly.speed * dt) * (s >= 0 and 1 or -1)
+        local absDist  = math.abs(total)
+        local sub      = math.clamp(math.ceil(absDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
+        local stepDist = total / sub
 
-        for _ = 1, substeps do
-            local target = curPos + (look * stepDist)
-            local newCF  = CFrame.lookAt(target, target + look, up)
-            if fly.alignRot then newCF = newCF * fly.alignRot end
-            v:PivotTo(newCF)
+        -- movement direction = full cam look + small anti-sag lift (forward gets lift, backward gets inverse)
+        local moveLook = look
+        if moveLook.Y < NEUTRAL_CLAMP then
+            moveLook = Vector3.new(moveLook.X, 0, moveLook.Z).Unit
+        end
+        moveLook = (moveLook + Vector3.new(0, PITCH_LIFT * (s >= 0 and 1 or -1), 0)).Unit
+
+        for _=1, sub do
+            local target = curPos + (moveLook * stepDist)
+            local newCF  = CFrame.lookAt(target, target + look, up) -- orientation = exact camera
+            hardPivot(v, newCF)
             curPos = target
         end
 
         local final = CFrame.lookAt(curPos, curPos + look, up)
-        if fly.alignRot then final = final * fly.alignRot end
+        hardPivot(v, final)
         fly.hoverCF, fly.lastAirCF = final, final
     end
 
-    ----------------------------------------------------------------
-    -- SafeFly (periodic ground lock + optional return)
-    ----------------------------------------------------------------
+    -- ===== SafeFly =====
     local function startSafeFly()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -172,19 +137,18 @@ return function(SV, tab, OrionLib)
                         if hit then
                             fly.locking = true
 
-                            local basePos = Vector3.new(probeCF.Position.X, hit.Position.Y + 2, probeCF.Position.Z)
-                            -- keep yaw from camera, use camera Up for stability
-                            local yawFwd = (workspace.CurrentCamera.CFrame.LookVector * Vector3.new(1,0,1)).Unit
-                            if yawFwd.Magnitude < 1e-3 then yawFwd = Vector3.new(0,0,-1) end
-                            local groundCF = CFrame.lookAt(basePos, basePos + yawFwd, workspace.CurrentCamera.CFrame.UpVector)
-                            if fly.alignRot then groundCF = groundCF * fly.alignRot end
+                            local basePos  = Vector3.new(probeCF.Position.X, hit.Position.Y + 2, probeCF.Position.Z)
+                            local cam      = workspace.CurrentCamera
+                            local yawFwd   = (cam.CFrame.LookVector * Vector3.new(1,0,1))
+                            yawFwd = (yawFwd.Magnitude > 1e-3) and yawFwd.Unit or Vector3.new(0,0,-1)
+                            local groundCF = CFrame.lookAt(basePos, basePos + yawFwd, cam.CFrame.UpVector)
 
                             local seat = SV.findDriveSeat(v)
                             local hum  = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
 
                             local t0 = os.clock()
                             while os.clock() - t0 < SAFE_HOLD and fly.enabled do
-                                v:PivotTo(groundCF)
+                                hardPivot(v, groundCF)
                                 if seat and hum and seat.Occupant ~= hum then
                                     pcall(function() seat:Sit(hum) end)
                                 end
@@ -192,9 +156,8 @@ return function(SV, tab, OrionLib)
                             end
 
                             if SAFE_BACK and fly.enabled then
-                                v:PivotTo(before)
-                                fly.hoverCF   = before
-                                fly.lastAirCF = before
+                                hardPivot(v, before)
+                                fly.hoverCF, fly.lastAirCF = before, before
                                 if seat and hum and seat.Occupant ~= hum then
                                     pcall(function() seat:Sit(hum) end)
                                 end
@@ -208,9 +171,7 @@ return function(SV, tab, OrionLib)
         end)
     end
 
-    ----------------------------------------------------------------
-    -- Enable/Disable + alignment calibration
-    ----------------------------------------------------------------
+    -- ===== Enable/Disable =====
     local function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
@@ -221,11 +182,7 @@ return function(SV, tab, OrionLib)
             setNetOwner(v)
 
             local cf = v:GetPivot()
-            fly.hoverCF   = cf
-            fly.lastAirCF = cf
-
-            calibrateAlign(v)              -- initial align
-            fly._didRecal = false          -- allow one re-calibration after first seated()
+            fly.hoverCF, fly.lastAirCF = cf, cf
 
             if fly.hbConn then fly.hbConn:Disconnect() end
             fly.hbConn = RunService.Heartbeat:Connect(step)
@@ -238,8 +195,7 @@ return function(SV, tab, OrionLib)
             fly.enabled = false
             if fly.hbConn   then fly.hbConn:Disconnect();   fly.hbConn  = nil end
             if fly.safeTask then task.cancel(fly.safeTask); fly.safeTask = nil end
-            fly.locking  = false
-            fly.alignRot = nil
+            fly.locking = false
             if fly.uiToggle then fly.uiToggle:Set(false) end
             notify("Car Fly","Disabled.", 2)
         end
@@ -252,10 +208,8 @@ return function(SV, tab, OrionLib)
         setEnabled(not fly.enabled)
     end
 
-    ----------------------------------------------------------------
-    -- UI
-    ----------------------------------------------------------------
-    local sec = tab:AddSection({ Name = "Car Fly (TP, precise cam-follow)" })
+    -- ===== UI =====
+    local sec = tab:AddSection({ Name = "Car Fly (TP, anti-sag)" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (vehicle only)",
         Default = false,
@@ -278,28 +232,11 @@ return function(SV, tab, OrionLib)
         Default = true,
         Callback = function(v) fly.safeOn = v end
     })
-    sec:AddBind({
-        Name = "Recalibrate Align",
-        Default = REALIGN_KEY,
-        Hold = false,
-        Callback = function()
-            local v = myVehicle()
-            if v and ensurePP(v) then calibrateAlign(v); notify("Car Fly","Re-aligned.", 2) end
-        end
-    })
 
-    -- Auto-Off when leaving seat + first-seat re-alignment
+    -- Auto-Off when leaving seat
     RunService.Heartbeat:Connect(function()
-        if fly.enabled then
-            if not seated() then
-                if fly._didRecal then fly._didRecal = false end
-                setEnabled(false)
-            elseif not fly._didRecal then
-                fly._didRecal = true
-                local v = myVehicle(); if v and ensurePP(v) then calibrateAlign(v) end
-            end
-        end
+        if fly.enabled and not seated() then setEnabled(false) end
     end)
 
-    print("[carfly v4.9.3] loaded")
+    print("[carfly v4.9.4] loaded")
 end
