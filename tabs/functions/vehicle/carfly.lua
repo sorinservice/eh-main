@@ -1,15 +1,15 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v3.5] loaded")
+print("[carfly_tp v3.6] loaded")
 
     ----------------------------------------------------------------
-    -- Car Fly v3.5
-    -- - Teleport-based (PivotTo), server-visible
-    -- - Hover lift: stays in air when idle
-    -- - Pitch-based vertical control with camera
-    -- - Smooth flight via POS_LERP
-    -- - Safe Fly (periodic ground settle)
-    -- - Mobile Fly UI
+    -- Car Fly v3.6
+    -- - PivotTo-only (server-visible), durch Wände möglich
+    -- - W/S = vor/zurück exakt in Kamera-Richtung (inkl. Pitch)
+    -- - Kein Baselift, kein Hüpfen beim Aktivieren
+    -- - Hover-Stabilisierung: ohne Input bleibt Höhe exakt erhalten
+    -- - Smooth via POS_LERP
+    -- - SafeFly + MobileFly enthalten
     ----------------------------------------------------------------
 
     local RunService = game:GetService("RunService")
@@ -20,8 +20,7 @@ print("[carfly_tp v3.5] loaded")
     -- ================== Config ==================
     local DEFAULT_SPEED   = 130
     local POS_LERP        = 0.35
-    local START_UP_NUDGE  = 2.0
-    local MIN_CLEARANCE   = 2.25
+    local MIN_CLEARANCE   = 2.25    -- nur als Boden-Schutz, beeinträchtigt Wände nicht
     local CLEARANCE_PROBE = 6
 
     local SAFE_PERIOD = 6.0
@@ -29,10 +28,6 @@ print("[carfly_tp v3.5] loaded")
     local SAFE_BACK   = true
 
     local TOGGLE_KEY  = Enum.KeyCode.X
-
-    -- Hover tuning
-    local BASE_LIFT   = 1.0   -- constant lift factor
-    local PITCH_LIFT  = 0.6   -- pitch multiplier
 
     -- ================== State ==================
     local fly = {
@@ -44,13 +39,19 @@ print("[carfly_tp v3.5] loaded")
         uiToggle   = nil,
         mobileUI   = nil,
         hold       = {F=false,B=false},
-        lastCF     = nil,
+        lastCF     = nil,  -- letzte Zielpose (für Hover)
         debounceTS = 0,
     }
 
     -- ================== Helpers ==================
     local function myVehicle() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
+
+    local function hasInput()
+        if UserInput:GetFocusedTextBox() then return false end
+        return UserInput:IsKeyDown(Enum.KeyCode.W) or fly.hold.F
+            or UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B
+    end
 
     local function dirInput()
         local dir = Vector3.zero
@@ -74,6 +75,7 @@ print("[carfly_tp v3.5] loaded")
     end
 
     local function withClearance(model, targetPos)
+        -- hebt nur minimal an, falls exakt über Boden; Wände werden nicht beeinflusst
         local hit = groundHitBelow(model, CLEARANCE_PROBE)
         if hit then
             local cf   = model:GetPivot()
@@ -85,12 +87,6 @@ print("[carfly_tp v3.5] loaded")
         return targetPos
     end
 
-    local function softLiftOff(model)
-        local cf = model:GetPivot()
-        model:PivotTo(cf + Vector3.new(0, START_UP_NUDGE, 0))
-        fly.lastCF = model:GetPivot()
-    end
-
     -- ================== Core Step ==================
     local function step(dt)
         if not fly.enabled then return end
@@ -100,22 +96,23 @@ print("[carfly_tp v3.5] loaded")
         if not v.PrimaryPart then if not ensurePP(v) then return end end
 
         local curCF = v:GetPivot()
-        local dir   = dirInput()
-        local stepVec = Vector3.zero
+        local targetPos
 
-        if dir.Magnitude > 0 then
-            dir = dir.Unit
-            stepVec = dir * (fly.speed * dt)
+        if hasInput() then
+            -- Bewegung exakt entlang Kamera (inkl. Pitch)
+            local dir = dirInput()
+            if dir.Magnitude > 0 then
+                dir = dir.Unit
+                targetPos = curCF.Position + dir * (fly.speed * dt)
+            else
+                targetPos = curCF.Position
+            end
+        else
+            -- HOVER: Höhe beibehalten, keine Drift, kein Fallen
+            local refY = (fly.lastCF and fly.lastCF.Y) or curCF.Y
+            targetPos  = Vector3.new(curCF.X, refY, curCF.Z)
         end
 
-        -- Hover lift (keeps car floating)
-        stepVec += Vector3.new(0, BASE_LIFT * fly.speed * dt, 0)
-
-        -- Pitch-based lift (mouse control)
-        local pitch = Camera.CFrame.LookVector.Y
-        stepVec += Vector3.new(0, pitch * fly.speed * PITCH_LIFT * dt, 0)
-
-        local targetPos = curCF.Position + stepVec
         targetPos = withClearance(v, targetPos)
 
         local newPos = curCF.Position:Lerp(targetPos, POS_LERP)
@@ -143,13 +140,11 @@ print("[carfly_tp v3.5] loaded")
                             hit.Position + Vector3.new(0, 2, 0),
                             hit.Position + Vector3.new(0, 2, 0) + Camera.CFrame.LookVector
                         )
-
                         local t0 = os.clock()
                         while os.clock() - t0 < SAFE_HOLD and fly.enabled do
                             v:PivotTo(lockCF)
                             RunService.Heartbeat:Wait()
                         end
-
                         if SAFE_BACK and fly.enabled then
                             v:PivotTo(before)
                             fly.lastCF = before
@@ -168,7 +163,8 @@ print("[carfly_tp v3.5] loaded")
         if on then
             if not v then notify("Car Fly","Kein Fahrzeug."); return end
             if not v.PrimaryPart then if not ensurePP(v) then notify("Car Fly","Kein PrimaryPart."); return end end
-            softLiftOff(v)
+            -- Kein Lift-Off → keine Y-Spikes beim Start
+            fly.lastCF = v:GetPivot()
             if fly.conn then fly.conn:Disconnect() end
             fly.conn = RunService.RenderStepped:Connect(step)
             startSafeFly()
@@ -239,7 +235,7 @@ print("[carfly_tp v3.5] loaded")
     local MobileFlyGui = spawnMobileFly()
 
     -- ================== UI ==================
-    local sec = tab:AddSection({ Name = "Car Fly v3.5" })
+    local sec = tab:AddSection({ Name = "Car Fly v3.6" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
