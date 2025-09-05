@@ -1,15 +1,14 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v3.9.1] loaded")
+print("[carfly_tp v4.2] loaded")
 
-    ----------------------------------------------------------------
-    -- Car Fly v3.9
-    -- - Teleport-only via Model:PivotTo (PrimaryPart), durch Wände
-    -- - Heartbeat-Loop mit dynamischen SUBSTEPS → aggressive, glatte Replikation
-    -- - Idle-Hard-Lock (steht exakt, kein Absinken)
-    -- - W/S exakt entlang Camera.LookVector (inkl. Pitch), kein Strafe
-    -- - SafeFly: alle 6s Boden-lock 0.5s, danach EXAKT zur Luftpose zurück
-    ----------------------------------------------------------------
+    -- Teleport-only (Heartbeat + Substeps), server-seitig sichtbar
+    -- W/S exakt entlang Camera.LookVector (inkl. Pitch), KEIN Strafe
+    -- Idle-Hard-Lock (steht exakt, kein Absinken/Drift)
+    -- Anti-Drift auch während Bewegung: Position wird nur entlang LookVector verändert
+    -- Garantierte Steigrate (ohne Lift-Off): min. Aufwärtsdelta wenn LookVector.Y > Deadzone
+    -- Down-only-Clearance (nur beim Sinkflug)
+    -- SafeFly: alle 6s Boden-Lock 0.5s, dann EXAKT zurück
 
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
@@ -19,47 +18,46 @@ print("[carfly_tp v3.9.1] loaded")
     local Camera     = SV.Camera
     local notify     = SV.notify
 
-    -- ================== Tuning ==================
-    local DEFAULT_SPEED    = 180           -- Grundgeschwindigkeit
-    local MAX_STEP_DIST    = 6             -- maximale Distanz pro Substep (studs)
-    local MAX_SUBSTEPS     = 8             -- Kappe für Substeps pro Frame
-    local POS_LERP         = 0.35          -- Lerp NUR bei Input (feintuning)
-    local MIN_CLEARANCE    = 2.0           -- Boden-Schutz (Wände egal)
-    local CLEARANCE_PROBE  = 6
+    -- ===== Tuning =====
+    local DEFAULT_SPEED     = 220          -- Grundspeed
+    local POS_LERP          = 0.28         -- Glättung NUR bei Input (0..1)
+    local MAX_STEP_DIST     = 4            -- max Distanz pro Substep (Studs)
+    local MAX_SUBSTEPS      = 14           -- max Substeps pro Frame
 
-    local SAFE_PERIOD      = 6.0
-    local SAFE_HOLD        = 0.5
-    local SAFE_BACK        = true
+    local PITCH_DEADZONE    = 0.02         -- kleine LookVector.Y werden ignoriert (Jitter weg)
+    local MIN_ASCENT_RATE   = 32           -- min. Aufwärtsrate (Studs/s), wenn Pitch über Deadzone
 
-    local TOGGLE_KEY       = Enum.KeyCode.X
+    local MIN_CLEARANCE     = 2.0          -- Bodensicherheit (nur beim Abwärts-TP)
+    local CLEARANCE_PROBE   = 8            -- Tiefe des Boden-Raycasts
 
-    -- ================== State ==================
+    local SAFE_PERIOD       = 6.0
+    local SAFE_HOLD         = 0.5
+    local SAFE_BACK         = true
+
+    local TOGGLE_KEY        = Enum.KeyCode.X
+
+    -- ===== State =====
     local fly = {
         enabled    = false,
         speed      = DEFAULT_SPEED,
         safeOn     = false,
 
-        hbConn     = nil,       -- Heartbeat connection
+        hbConn     = nil,
         safeTask   = nil,
 
         uiToggle   = nil,
         hold       = {F=false,B=false},
 
-        hoverCF    = nil,       -- harte Luft-Pose für Idle
-        lastAirCF  = nil,       -- für SafeFly-Return
+        hoverCF    = nil,   -- Idle-Hard-Lock-Pose
+        lastAirCF  = nil,   -- Rücksprung für SafeFly
         debounceTS = 0,
     }
 
-    -- ================== Helpers ==================
+    -- ===== Helpers =====
     local function myVehicle() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
-
     local function setNetOwner(v)
-        pcall(function()
-            if v and v.PrimaryPart then
-                v.PrimaryPart:SetNetworkOwner(LP)  -- bessere Replikationsautorität
-            end
-        end)
+        pcall(function() if v and v.PrimaryPart then v.PrimaryPart:SetNetworkOwner(LP) end end)
     end
 
     local function hasInput()
@@ -69,14 +67,10 @@ print("[carfly_tp v3.9.1] loaded")
     end
 
     local function dirInput()
-        local dir = Vector3.zero
+        local dir = 0    -- +1 vorwärts, -1 rückwärts, 0 nichts
         if not UserInput:GetFocusedTextBox() then
-            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.hold.F then
-                dir += Camera.CFrame.LookVector
-            end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B then
-                dir -= Camera.CFrame.LookVector
-            end
+            if UserInput:IsKeyDown(Enum.KeyCode.W) or fly.hold.F then dir = dir + 1 end
+            if UserInput:IsKeyDown(Enum.KeyCode.S) or fly.hold.B then dir = dir - 1 end
         end
         return dir
     end
@@ -89,20 +83,19 @@ print("[carfly_tp v3.9.1] loaded")
         return workspace:Raycast(cf.Position, Vector3.new(0, -math.max(depth or 1000,1), 0), params)
     end
 
-    local function withClearance(model, targetPos)
-        -- Nur Boden leicht anheben; Wände/Decken bleiben unberührt
+    -- nur beim Abwärts-TP clampen; Aufwärts nie begrenzen
+    local function applyClearanceDownOnly(model, currentPos, targetPos)
+        if targetPos.Y >= currentPos.Y then return targetPos end
         local hit = groundHitBelow(model, CLEARANCE_PROBE)
-        if hit then
-            local cf   = model:GetPivot()
-            local dist = (cf.Position - hit.Position).Y
-            if dist < MIN_CLEARANCE then
-                targetPos = Vector3.new(targetPos.X, math.max(targetPos.Y, hit.Position.Y + MIN_CLEARANCE), targetPos.Z)
-            end
+        if not hit then return targetPos end
+        local floorY = hit.Position.Y + MIN_CLEARANCE
+        if targetPos.Y < floorY then
+            targetPos = Vector3.new(targetPos.X, floorY, targetPos.Z)
         end
         return targetPos
     end
 
-    -- ================== Core Step (Heartbeat + Substeps) ==================
+    -- ===== Core (Heartbeat + Substeps) =====
     local function step(dt)
         if not fly.enabled then return end
         if not SV.isSeated()   then return end
@@ -111,55 +104,74 @@ print("[carfly_tp v3.9.1] loaded")
         if not v.PrimaryPart then if not ensurePP(v) then return end end
         setNetOwner(v)
 
-        local baseCF = v:GetPivot()
+        local curCF  = v:GetPivot()
+        local curPos = curCF.Position
 
-        -- Idle: Pose hart halten (kein Lerp, keine Grav-Lücken)
+        -- Idle: harte Pose (kein Absinken/Drift), Blick folgt Kamera
         if not hasInput() then
-            local keep = fly.hoverCF or baseCF
-            local lockCF = CFrame.new(keep.Position, keep.Position + Camera.CFrame.LookVector)
-            v:PivotTo(lockCF)
-            fly.lastAirCF = lockCF
-            -- hoverCF NICHT ändern, damit Idle stabil bleibt
-            return
-        end
-
-        -- Bewegung pfadweise in Substeps aufteilen
-        local moveDir = dirInput()
-        if moveDir.Magnitude <= 0 then
-            -- theoretisch nicht erreichbar wegen hasInput(), aber safety:
-            local keep = fly.hoverCF or baseCF
+            local keep   = fly.hoverCF or curCF
             local lockCF = CFrame.new(keep.Position, keep.Position + Camera.CFrame.LookVector)
             v:PivotTo(lockCF)
             fly.lastAirCF = lockCF
             return
         end
 
-        moveDir = moveDir.Unit
-        local totalDist = fly.speed * dt                     -- gesamt in diesem Frame
+        local dir = dirInput()       -- -1, 0, +1
+        if dir == 0 then
+            local keep   = fly.hoverCF or curCF
+            local lockCF = CFrame.new(keep.Position, keep.Position + Camera.CFrame.LookVector)
+            v:PivotTo(lockCF)
+            fly.lastAirCF = lockCF
+            return
+        end
+
+        -- reiner Bewegungsvektor = ±LookVector, seitliche Komponenten ausgeschlossen
+        local look = Camera.CFrame.LookVector
+        -- numerisch stabilisieren: normalisieren, falls nötig
+        if look.Magnitude < 0.999 then
+            look = look.Unit
+        end
+        local moveDir = (dir > 0) and look or (-look)
+
+        -- Deadzone/Min-Ascent: Y-Anteil erzwingen, wenn nach oben (bzw. bei rückwärts + Blick nach unten)
+        -- pro Frame geplante Gesamtdistanz:
+        local totalDist = fly.speed * dt
         local substeps  = math.clamp(math.ceil(totalDist / MAX_STEP_DIST), 1, MAX_SUBSTEPS)
         local stepDist  = totalDist / substeps
-
-        local curPos = baseCF.Position
+        local minAscPerStep = (MIN_ASCENT_RATE * dt) / substeps
 
         for i = 1, substeps do
+            -- Ziel nur entlang moveDir (Anti-Drift)
             local targetPos = curPos + moveDir * stepDist
-            targetPos = withClearance(v, targetPos)
 
-            -- nur bei Bewegung minimal glätten; small Lerp macht's butterweich
-            local lerpedPos = curPos:Lerp(targetPos, POS_LERP)
-            local newCF     = CFrame.new(lerpedPos, lerpedPos + Camera.CFrame.LookVector)
+            -- garantierte Aufwärtsbewegung, wenn Y-Komponente „nach oben“ zeigt, aber zu klein wäre:
+            local plannedDY = targetPos.Y - curPos.Y
+            if plannedDY > 0 then
+                -- nur wenn Blick wirklich „spürbar“ nach oben: Deadzone
+                if math.abs(look.Y) > PITCH_DEADZONE and plannedDY < minAscPerStep then
+                    targetPos = Vector3.new(targetPos.X, curPos.Y + minAscPerStep, targetPos.Z)
+                end
+            end
+
+            -- Down-only-Clearance
+            targetPos = applyClearanceDownOnly(v, curPos, targetPos)
+
+            -- leichte Glättung
+            local lerped = curPos:Lerp(targetPos, POS_LERP)
+
+            -- Orientierung exakt an Kamera
+            local newCF = CFrame.new(lerped, lerped + Camera.CFrame.LookVector)
 
             v:PivotTo(newCF)
-            curPos = newCF.Position
+            curPos = lerped
         end
 
-        -- Luft-Pose aktualisieren (für Idle/SafeFly)
         local finalCF = CFrame.new(curPos, curPos + Camera.CFrame.LookVector)
         fly.hoverCF   = finalCF
         fly.lastAirCF = finalCF
     end
 
-    -- ================== Safe Fly ==================
+    -- ===== Safe Fly =====
     local function startSafeFly()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -195,7 +207,7 @@ print("[carfly_tp v3.9.1] loaded")
         end)
     end
 
-    -- ================== Toggle ==================
+    -- ===== Toggle =====
     local function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
@@ -206,7 +218,7 @@ print("[carfly_tp v3.9.1] loaded")
             setNetOwner(v)
 
             local cf = v:GetPivot()
-            fly.hoverCF   = cf     -- Start: keine Y-Spikes
+            fly.hoverCF   = cf     -- Start: keine künstliche Y-Änderung
             fly.lastAirCF = cf
 
             if fly.hbConn then fly.hbConn:Disconnect() end
@@ -232,7 +244,7 @@ print("[carfly_tp v3.9.1] loaded")
         setEnabled(not fly.enabled)
     end
 
-    -- ================== Mobile Panel ==================
+    -- ===== Mobile Panel =====
     local function spawnMobileFly()
         local gui = Instance.new("ScreenGui")
         gui.Name = "Sorin_MobileFly"
@@ -279,8 +291,8 @@ print("[carfly_tp v3.9.1] loaded")
     end
     local MobileFlyGui = spawnMobileFly()
 
-    -- ================== UI ==================
-    local sec = tab:AddSection({ Name = "Car Fly v3.9" })
+    -- ===== UI =====
+    local sec = tab:AddSection({ Name = "Car Fly v4.2" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
@@ -294,7 +306,7 @@ print("[carfly_tp v3.9.1] loaded")
     })
     sec:AddSlider({
         Name = "Speed",
-        Min = 10, Max = 400, Increment = 5,
+        Min = 10, Max = 500, Increment = 5,
         Default = DEFAULT_SPEED,
         Callback = function(v) fly.speed = math.floor(v) end
     })
