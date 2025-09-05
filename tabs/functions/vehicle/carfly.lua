@@ -1,16 +1,16 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-print("[carfly_tp v4.8.7] loaded")
+print("[carfly_tp v4.8.4] loaded")
 
     -- TP-only (PivotTo), serverseitig sichtbar
     -- Steuerung:
     --   - W/S = vor/zurück
     --   - Fahrzeug-Ausrichtung folgt der KAMERA inkl. Pitch (voller LookVector)
-    --   - Horizontal = Kamera-Yaw, Vertikal = Pitch + Kompensation (kein Vorwärts-Sinkflug)
+    --   - Horizontalbewegung entlang Kamera-Yaw, Vertikal separat aus Pitch (mit Kompensation)
+    --   - Kein Vorwärts-Sinkflug mehr, aber „gefühlt“ gleiche Kameralogik wie zuvor
     -- SafeFly:
-    --   - Alle 6s Boden-Lock 0.5s, dann exakt zurück (Re-Seat ohne Welds/Constraints)
-    -- Boden-Clamp:
-    --   - Min. Bodenabstand pro Step, verhindert „Ansaugen/Einsacken“
+    --   - Alle 6s Boden-Lock 0.5s, dann exakt zurück
+    --   - Während Lock Movement pausiert, Re-Seat wenn nötig (ohne Welds/Constraints)
 
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
@@ -21,30 +21,25 @@ print("[carfly_tp v4.8.7] loaded")
     local notify = SV.notify
 
     ----------------------------------------------------------------
-    -- Tuning
+    -- Tuning (hard-coded, keine UI-Slider – justier hier)
     ----------------------------------------------------------------
-    local DEFAULT_SPEED        = 240      -- studs/s
-    local MAX_STEP_DIST        = 4        -- max TP je Substep
-    local MAX_SUBSTEPS         = 18       -- Substeps pro Heartbeat (mehr = glatter)
+    local DEFAULT_SPEED       = 240      -- studs/s
+    local MAX_STEP_DIST       = 4        -- max TP je Substep
+    local MAX_SUBSTEPS        = 18       -- Substeps pro Heartbeat (mehr = glatter)
 
     -- Pitch→Höhe (gegen „Chasecam schaut leicht nach unten“)
-    local CAM_PITCH_OFFSET     = 0.09     -- additiv zu Look.Y (0.04–0.10)
-    local NEUTRAL_DEADZONE     = 0.05     -- |Look.Y + Offset| <= deadzone ⇒ neutral
-    local NEUTRAL_CLIMB_RATE   = 16       -- studs/s bei W + neutral (0 = exakt halten)
-    local MIN_ASCENT_RATE      = 46       -- studs/s Mindest-Steigrate bei leicht positivem Pitch
-
-    -- Boden-Clamp (gegen Einsacken/Ankleben)
-    local GROUND_CLAMP         = true
-    local GROUND_CLEARANCE     = 2.4      -- Mindestabstand in Studs
-    local CLEARANCE_PROBE      = 12       -- Raycast-Tiefe
+    local CAM_PITCH_OFFSET    = 0.09     -- additiv zu Look.Y für die Höhenberechnung (0.04–0.10)
+    local NEUTRAL_DEADZONE    = 0.05     -- |Look.Y + Offset| <= deadzone ⇒ „neutral“ (kein Sinken)
+    local NEUTRAL_CLIMB_RATE  = 16       -- studs/s bei W + neutral (0 = exakt Höhe halten)
+    local MIN_ASCENT_RATE     = 46       -- studs/s Mindest-Steigrate bei leicht positivem Pitch
 
     -- SafeFly
-    local SAFE_PERIOD          = 6.0      -- s
-    local SAFE_HOLD            = 0.5      -- s
-    local SAFE_BACK            = true
-    local SAFE_RAY_DEPTH       = 4000     -- studs
+    local SAFE_PERIOD         = 6.0      -- s
+    local SAFE_HOLD           = 0.5      -- s
+    local SAFE_BACK           = true
+    local SAFE_RAY_DEPTH      = 4000     -- studs
 
-    local TOGGLE_KEY           = Enum.KeyCode.X
+    local TOGGLE_KEY          = Enum.KeyCode.X
 
     ----------------------------------------------------------------
     -- State
@@ -91,30 +86,6 @@ print("[carfly_tp v4.8.7] loaded")
         return d -- -1,0,+1
     end
 
-    local function groundHitBelow(model, depth)
-        local cf = model:GetPivot()
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-        params.FilterDescendantsInstances = {model}
-        return workspace:Raycast(
-            cf.Position + Vector3.new(0, CLEARANCE_PROBE*0.5, 0),
-            Vector3.new(0, -math.max(depth or CLEARANCE_PROBE,1), 0),
-            params
-        )
-    end
-
-    local function enforceClearance(model, pos)
-        if not GROUND_CLAMP then return pos end
-        local hit = groundHitBelow(model, CLEARANCE_PROBE)
-        if hit then
-            local minY = hit.Position.Y + GROUND_CLEARANCE
-            if pos.Y < minY then
-                pos = Vector3.new(pos.X, minY, pos.Z)
-            end
-        end
-        return pos
-    end
-
     ----------------------------------------------------------------
     -- Core (Heartbeat + Substeps)
     ----------------------------------------------------------------
@@ -136,12 +107,7 @@ print("[carfly_tp v4.8.7] loaded")
 
         -- Yaw für horizontale Bewegung (falls Kamera extrem nach oben/unten schaut)
         local yaw = Vector3.new(look.X, 0, look.Z)
-        if yaw.Magnitude < 1e-3 then
-            yaw = fly.lastYaw
-        else
-            yaw = yaw.Unit
-            fly.lastYaw = yaw
-        end
+        if yaw.Magnitude < 1e-3 then yaw = fly.lastYaw else yaw = yaw.Unit; fly.lastYaw = yaw end
 
         -- Effektiver Pitch (mit Offset), nur für Vertikalberechnung
         local effY = look.Y + CAM_PITCH_OFFSET
@@ -149,7 +115,6 @@ print("[carfly_tp v4.8.7] loaded")
         -- Idle: Position halten, AUSRICHTUNG = volle Kamera (Pitch inklusive)
         if not hasInput() then
             local keepPos = (fly.hoverCF and fly.hoverCF.Position) or curPos
-            keepPos = enforceClearance(v, keepPos)
             local lockCF  = CFrame.new(keepPos, keepPos + look)
             v:PivotTo(lockCF)
             fly.lastAirCF = lockCF
@@ -159,7 +124,6 @@ print("[carfly_tp v4.8.7] loaded")
         local s = dirScalar()
         if s == 0 then
             local keepPos = (fly.hoverCF and fly.hoverCF.Position) or curPos
-            keepPos = enforceClearance(v, keepPos)
             local lockCF  = CFrame.new(keepPos, keepPos + look)
             v:PivotTo(lockCF); fly.lastAirCF = lockCF; return
         end
@@ -196,16 +160,13 @@ print("[carfly_tp v4.8.7] loaded")
                     target = Vector3.new(target.X, curPos.Y + (effY * stepDist), target.Z)
                 end
             else
-                -- Rückwärts: neutral Höhe halten; sonst Pitch spiegeln (S + runter = hoch)
+                -- Rückwärts: neutral Höhe halten; sonst Pitch spiegeln (so ist S + runter = hoch)
                 if math.abs(effY) <= NEUTRAL_DEADZONE then
                     target = Vector3.new(target.X, curPos.Y, target.Z)
                 else
                     target = Vector3.new(target.X, curPos.Y + (-effY * stepDist), target.Z)
                 end
             end
-
-            -- Mindestabstand zum Boden
-            target = enforceClearance(v, target)
 
             -- Ausrichtung = volle Kamera (Pitch behalten)
             local newCF = CFrame.new(target, target + look)
@@ -329,7 +290,7 @@ print("[carfly_tp v4.8.7] loaded")
     ----------------------------------------------------------------
     -- UI (nur das Nötige)
     ----------------------------------------------------------------
-    local sec = tab:AddSection({ Name = "Car Fly v4.8.7" })
+    local sec = tab:AddSection({ Name = "Car Fly v4.8" })
     fly.uiToggle = sec:AddToggle({
         Name = "Enable Car Fly (nur im Auto)",
         Default = false,
