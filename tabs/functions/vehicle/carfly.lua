@@ -1,27 +1,20 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
-
-    ----------------------------------------------------------------
-    -- Car Fly (TP) + SafeFly ground-touch every 6s (0.5s hold)
-    -- Simplified: no idle-fly, no reseat, minimal UI.
-    -- During SafeFly lock the car is frozen and then restored exactly.
-    ----------------------------------------------------------------
+    print("M")
 
     -- ===== Tunables (code-only) =====
     local TUNE = {
         SPEED_DEFAULT = 130,   -- studs/s
         STEP_DIST     = 1.0,   -- max TP per substep
         SUBSTEPS_MAX  = 48,
-
         VERT_GAIN     = 1.00,
         Y_BIAS        = 0.00,
-
-        SAFE_PERIOD   = 6.0,   -- interval between locks
-        SAFE_HOLD     = 0.5,   -- how long we must touch ground
-        RAY_DEPTH     = 8000,  -- how far we raycast down for ground
+        SAFE_PERIOD   = 6.0,   -- every 6s
+        SAFE_HOLD     = 0.5,   -- hold 0.5s
+        RAY_DEPTH     = 8000,  -- downward ray
+        GROUND_PAD    = 0.05,  -- tiny pad to avoid z-fight
     }
 
-    -- ===== Services / Shortcuts =====
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
@@ -55,22 +48,20 @@ return function(SV, tab, OrionLib)
         return workspace:Raycast(origin, Vector3.new(0, -(depth or TUNE.RAY_DEPTH), 0), params)
     end
 
-    -- ===== State =====
+    -- === State ===
     local fly = {
         enabled   = false,
         speed     = TUNE.SPEED_DEFAULT,
         safeOn    = true,
-
         hbConn    = nil,
         safeTask  = nil,
         locking   = false,
-
         uiToggle  = nil,
         lastAirCF = nil,
         debounce  = 0,
     }
 
-    -- ===== Core Flight Step (no idle/auto-ground) =====
+    -- === Flight step (no idle-grounding) ===
     local function step(dt)
         if not fly.enabled or fly.locking then return end
 
@@ -88,7 +79,6 @@ return function(SV, tab, OrionLib)
 
         local s = dirScalar()
         if s == 0 then
-            -- Hold current attitude/spot while no input (no idle snap-to-ground).
             local lock = CFrame.lookAt(curPos, curPos + look, up)
             hardPivot(v, lock)
             fly.lastAirCF = lock
@@ -105,8 +95,7 @@ return function(SV, tab, OrionLib)
 
         for _ = 1, sub do
             local target = curPos + (moveLook * stepDist)
-            local newCF  = CFrame.lookAt(target, target + look, up)
-            hardPivot(v, newCF)
+            hardPivot(v, CFrame.lookAt(target, target + look, up))
             curPos = target
         end
 
@@ -115,7 +104,7 @@ return function(SV, tab, OrionLib)
         fly.lastAirCF = final
     end
 
-    -- ===== SafeFly (always active while fly.enabled and safeOn) =====
+    -- === SafeFly: touch ground for 0.5s, then restore EXACTLY ===
     local function startSafeFly()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -127,46 +116,46 @@ return function(SV, tab, OrionLib)
                     if not fly.enabled then break end
 
                     local v = myVehicle()
-                    if v and (v.PrimaryPart or ensurePP(v)) then
-                        local beforeCF = fly.lastAirCF or v:GetPivot()
+                    if not v or not (v.PrimaryPart or ensurePP(v)) then goto continue end
 
-                        -- find ground straight below current position
-                        local probeCF = v:GetPivot()
-                        local hit = groundHit(probeCF.Position, TUNE.RAY_DEPTH, {v})
-                        if hit then
-                            fly.locking = true
+                    local beforeCF = fly.lastAirCF or v:GetPivot()
+                    local probeCF  = v:GetPivot()
 
-                            -- exact ground touch (slight pad to avoid clipping)
-                            local cam    = workspace.CurrentCamera
-                            local yawFwd = (cam.CFrame.LookVector * Vector3.new(1,0,1))
-                            yawFwd = (yawFwd.Magnitude > 1e-3) and yawFwd.Unit or Vector3.new(0,0,-1)
+                    -- cast from current position straight down
+                    local hit = groundHit(probeCF.Position, TUNE.RAY_DEPTH, {v})
+                    if not hit then goto continue end
 
-                            local baseY  = hit.Position.Y + 0.05
-                            local base   = Vector3.new(probeCF.Position.X, baseY, probeCF.Position.Z)
-                            local groundCF = CFrame.lookAt(base, base + yawFwd, cam.CFrame.UpVector)
+                    -- compute half-height so BOTTOM touches ground
+                    local halfY = (v:GetExtentsSize().Y * 0.5)
+                    local cam   = workspace.CurrentCamera
+                    local yawF  = (cam.CFrame.LookVector * Vector3.new(1,0,1))
+                    yawF = (yawF.Magnitude > 1e-3) and yawF.Unit or Vector3.new(0,0,-1)
 
-                            -- hold on ground for SAFE_HOLD seconds, frozen
-                            local t0 = os.clock()
-                            while os.clock() - t0 < TUNE.SAFE_HOLD and fly.enabled do
-                                hardPivot(v, groundCF)
-                                RunService.Heartbeat:Wait()
-                            end
+                    local baseY    = hit.Position.Y + halfY + TUNE.GROUND_PAD
+                    local basePos  = Vector3.new(probeCF.Position.X, baseY, probeCF.Position.Z)
+                    local groundCF = CFrame.lookAt(basePos, basePos + yawF, cam.CFrame.UpVector)
 
-                            -- restore to exact previous CFrame
-                            if fly.enabled then
-                                hardPivot(v, beforeCF)
-                                fly.lastAirCF = beforeCF
-                            end
-
-                            fly.locking = false
-                        end
+                    -- lock: freeze for SAFE_HOLD, then restore
+                    fly.locking = true
+                    local t0 = os.clock()
+                    while os.clock() - t0 < TUNE.SAFE_HOLD and fly.enabled do
+                        hardPivot(v, groundCF)
+                        RunService.Heartbeat:Wait()
                     end
+
+                    if fly.enabled then
+                        hardPivot(v, beforeCF)
+                        fly.lastAirCF = beforeCF
+                    end
+
+                    fly.locking = false
+                    ::continue::
                 end
             end
         end)
     end
 
-    -- ===== Enable/Disable =====
+    -- === Enable/Disable ===
     local function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
@@ -201,26 +190,10 @@ return function(SV, tab, OrionLib)
         setEnabled(not fly.enabled)
     end
 
-    -- ===== Minimal UI: Fly toggle, Keybind, SafeFly =====
+    -- === Minimal UI ===
     local sec = tab:AddSection({ Name = "Car Fly" })
-
-    fly.uiToggle = sec:AddToggle({
-        Name = "Enable Car Fly",
-        Default = false,
-        Callback = function(v) setEnabled(v) end
-    })
-
-    sec:AddBind({
-        Name = "Toggle Key",
-        Default = Enum.KeyCode.X,
-        Hold = false,
-        Callback = function() toggle() end
-    })
-
-    sec:AddToggle({
-        Name = "Safe Fly",
-        Default = true,
-        Callback = function(v) fly.safeOn = v end
-    })
+    fly.uiToggle = sec:AddToggle({ Name = "Enable Car Fly", Default = false, Callback = function(v) setEnabled(v) end })
+    sec:AddBind({ Name = "Toggle Key", Default = Enum.KeyCode.X, Hold = false, Callback = function() toggle() end })
+    sec:AddToggle({ Name = "Safe Fly", Default = true, Callback = function(v) fly.safeOn = v end })
 
 end
