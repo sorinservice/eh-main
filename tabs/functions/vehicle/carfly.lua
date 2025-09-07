@@ -2,71 +2,34 @@
 return function(SV, tab, OrionLib)
 
     ----------------------------------------------------------------
-    -- Car Fly (TP, precise) + SafeFly (ground-touch 0.5s, restore)
-    -- Version: 5.1.0 (UI trimmed: only Fly toggle, Keybind, SafeFly)
+    -- Car Fly (TP) + SafeFly ground-touch every 6s (0.5s hold)
+    -- Simplified: no idle-fly, no reseat, minimal UI.
+    -- During SafeFly lock the car is frozen and then restored exactly.
     ----------------------------------------------------------------
 
-    ----------------------------------------------------------------
-    -- TUNABLES (code-only; no sliders)
-    ----------------------------------------------------------------
+    -- ===== Tunables (code-only) =====
     local TUNE = {
-        SPEED_DEFAULT   = 130,   -- studs/s
-        STEP_DIST       = 1.0,   -- max TP per substep
-        SUBSTEPS_MAX    = 48,
+        SPEED_DEFAULT = 130,   -- studs/s
+        STEP_DIST     = 1.0,   -- max TP per substep
+        SUBSTEPS_MAX  = 48,
 
-        -- Camera vertical shaping
-        VERT_GAIN       = 1.00,
-        Y_BIAS          = 0.00,
+        VERT_GAIN     = 1.00,
+        Y_BIAS        = 0.00,
 
-        -- Raycast
-        RAY_DEPTH       = 4000,
-
-        -- SafeFly
-        SAFE_PERIOD     = 6.0,   -- every 6s
-        SAFE_HOLD       = 0.5,   -- hold on ground for 0.5s
-        SAFE_BACK       = true,  -- return to exact pre-lock CFrame
-
-        -- Server ReSeat (no local Sit/ChangeState)
-        RESEAT_ENABLED  = true,
-        REMOTE_FOLDER   = "Bnl",
-        VEHICLES_FOLDER = "Vehicles",
+        SAFE_PERIOD   = 6.0,   -- interval between locks
+        SAFE_HOLD     = 0.5,   -- how long we must touch ground
+        RAY_DEPTH     = 8000,  -- how far we raycast down for ground
     }
 
-    ----------------------------------------------------------------
-    -- Services / Shortcuts
-    ----------------------------------------------------------------
+    -- ===== Services / Shortcuts =====
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
-    local RS         = game:GetService("ReplicatedStorage")
     local LP         = Players.LocalPlayer
-    local notify     = SV.notify
 
-    ----------------------------------------------------------------
-    -- State
-    ----------------------------------------------------------------
-    local fly = {
-        enabled   = false,
-        speed     = TUNE.SPEED_DEFAULT,
-        safeOn    = true,
-
-        hbConn    = nil,
-        safeTask  = nil,
-        locking   = false,
-
-        uiToggle  = nil,
-        hoverCF   = nil,
-        lastAirCF = nil,
-        debounce  = 0,
-    }
-
-    ----------------------------------------------------------------
-    -- Helpers
-    ----------------------------------------------------------------
     local function myVehicle() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
     local function setNetOwner(v) pcall(function() if v and v.PrimaryPart then v.PrimaryPart:SetNetworkOwner(LP) end end) end
-    local function seated() return SV.isSeated() end
 
     local function dirScalar()
         if UserInput:GetFocusedTextBox() then return 0 end
@@ -92,42 +55,24 @@ return function(SV, tab, OrionLib)
         return workspace:Raycast(origin, Vector3.new(0, -(depth or TUNE.RAY_DEPTH), 0), params)
     end
 
-    -- DriveSeat lookup
-    local function findSeat(v)
-        return SV.findDriveSeat(v) or v:FindFirstChild("DriveSeat")
-    end
+    -- ===== State =====
+    local fly = {
+        enabled   = false,
+        speed     = TUNE.SPEED_DEFAULT,
+        safeOn    = true,
 
-    -- Dynamic RemoteEvents in RS.Bnl (UUIDs change; fire all)
-    local BnlFolder = RS:FindFirstChild(TUNE.REMOTE_FOLDER)
-    local function seatRemotes()
-        local out = {}
-        local folder = BnlFolder or RS:FindFirstChild(TUNE.REMOTE_FOLDER)
-        if not folder then return out end
-        for _,ch in ipairs(folder:GetChildren()) do
-            if ch:IsA("RemoteEvent") then
-                table.insert(out, ch)
-            end
-        end
-        return out
-    end
-    local cachedSeatRemotes = seatRemotes()
+        hbConn    = nil,
+        safeTask  = nil,
+        locking   = false,
 
-    -- FireServer signature observed: (DriveSeat, "Oj2", false)
-    local function reseatServerBySeat(seat)
-        if not (TUNE.RESEAT_ENABLED and seat) then return end
-        for _,re in ipairs(cachedSeatRemotes) do
-            pcall(function()
-                re:FireServer(seat, "Oj2", false)
-            end)
-        end
-    end
+        uiToggle  = nil,
+        lastAirCF = nil,
+        debounce  = 0,
+    }
 
-    ----------------------------------------------------------------
-    -- Core Flight Step
-    ----------------------------------------------------------------
+    -- ===== Core Flight Step (no idle/auto-ground) =====
     local function step(dt)
         if not fly.enabled or fly.locking then return end
-        if not seated() then return end
 
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
@@ -143,8 +88,8 @@ return function(SV, tab, OrionLib)
 
         local s = dirScalar()
         if s == 0 then
-            local keep = (fly.hoverCF and fly.hoverCF.Position) or curPos
-            local lock = CFrame.lookAt(keep, keep + look, up)
+            -- Hold current attitude/spot while no input (no idle snap-to-ground).
+            local lock = CFrame.lookAt(curPos, curPos + look, up)
             hardPivot(v, lock)
             fly.lastAirCF = lock
             return
@@ -167,12 +112,10 @@ return function(SV, tab, OrionLib)
 
         local final = CFrame.lookAt(curPos, curPos + look, up)
         hardPivot(v, final)
-        fly.hoverCF, fly.lastAirCF = final, final
+        fly.lastAirCF = final
     end
 
-    ----------------------------------------------------------------
-    -- SafeFly: every SAFE_PERIOD -> ground-lock for SAFE_HOLD, then restore
-    ----------------------------------------------------------------
+    -- ===== SafeFly (always active while fly.enabled and safeOn) =====
     local function startSafeFly()
         if fly.safeTask then task.cancel(fly.safeTask) end
         fly.safeTask = task.spawn(function()
@@ -187,35 +130,32 @@ return function(SV, tab, OrionLib)
                     if v and (v.PrimaryPart or ensurePP(v)) then
                         local beforeCF = fly.lastAirCF or v:GetPivot()
 
-                        -- Find ground directly below current position
-                        local probe = v:GetPivot()
-                        local hit = groundHit(probe.Position, TUNE.RAY_DEPTH, {v})
+                        -- find ground straight below current position
+                        local probeCF = v:GetPivot()
+                        local hit = groundHit(probeCF.Position, TUNE.RAY_DEPTH, {v})
                         if hit then
                             fly.locking = true
 
-                            -- Build ground CF (keep yaw from camera, set Y to ground + small pad)
+                            -- exact ground touch (slight pad to avoid clipping)
                             local cam    = workspace.CurrentCamera
                             local yawFwd = (cam.CFrame.LookVector * Vector3.new(1,0,1))
                             yawFwd = (yawFwd.Magnitude > 1e-3) and yawFwd.Unit or Vector3.new(0,0,-1)
-                            local base   = Vector3.new(probe.Position.X, hit.Position.Y + 0.2, probe.Position.Z)
+
+                            local baseY  = hit.Position.Y + 0.05
+                            local base   = Vector3.new(probeCF.Position.X, baseY, probeCF.Position.Z)
                             local groundCF = CFrame.lookAt(base, base + yawFwd, cam.CFrame.UpVector)
 
-                            local seat = findSeat(v)
-
-                            -- Ensure server-side reseat, then hold the ground lock for SAFE_HOLD seconds
-                            reseatServerBySeat(seat)
+                            -- hold on ground for SAFE_HOLD seconds, frozen
                             local t0 = os.clock()
                             while os.clock() - t0 < TUNE.SAFE_HOLD and fly.enabled do
                                 hardPivot(v, groundCF)
-                                reseatServerBySeat(seat)
                                 RunService.Heartbeat:Wait()
                             end
 
-                            -- Return to exact previous CFrame
-                            if TUNE.SAFE_BACK and fly.enabled then
+                            -- restore to exact previous CFrame
+                            if fly.enabled then
                                 hardPivot(v, beforeCF)
-                                fly.hoverCF, fly.lastAirCF = beforeCF, beforeCF
-                                reseatServerBySeat(seat)
+                                fly.lastAirCF = beforeCF
                             end
 
                             fly.locking = false
@@ -226,20 +166,18 @@ return function(SV, tab, OrionLib)
         end)
     end
 
-    ----------------------------------------------------------------
-    -- Enable/Disable
-    ----------------------------------------------------------------
+    -- ===== Enable/Disable =====
     local function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
 
         if on then
-            if not v then notify("Car Fly","No vehicle."); return end
-            if not v.PrimaryPart then if not ensurePP(v) then notify("Car Fly","No PrimaryPart."); return end end
+            if not v then return end
+            if not v.PrimaryPart then if not ensurePP(v) then return end end
             setNetOwner(v)
 
             local cf = v:GetPivot()
-            fly.hoverCF, fly.lastAirCF = cf, cf
+            fly.lastAirCF = cf
 
             if fly.hbConn then fly.hbConn:Disconnect() end
             fly.hbConn = RunService.Heartbeat:Connect(step)
@@ -247,14 +185,12 @@ return function(SV, tab, OrionLib)
             startSafeFly()
             fly.enabled = true
             if fly.uiToggle then fly.uiToggle:Set(true) end
-            notify("Car Fly", ("Enabled (Speed %d)"):format(fly.speed), 2)
         else
             fly.enabled = false
             if fly.hbConn   then fly.hbConn:Disconnect();   fly.hbConn  = nil end
             if fly.safeTask then task.cancel(fly.safeTask); fly.safeTask = nil end
             fly.locking = false
             if fly.uiToggle then fly.uiToggle:Set(false) end
-            notify("Car Fly","Disabled.", 2)
         end
     end
 
@@ -265,9 +201,7 @@ return function(SV, tab, OrionLib)
         setEnabled(not fly.enabled)
     end
 
-    ----------------------------------------------------------------
-    -- UI (minimal)
-    ----------------------------------------------------------------
+    -- ===== Minimal UI: Fly toggle, Keybind, SafeFly =====
     local sec = tab:AddSection({ Name = "Car Fly" })
 
     fly.uiToggle = sec:AddToggle({
@@ -289,10 +223,4 @@ return function(SV, tab, OrionLib)
         Callback = function(v) fly.safeOn = v end
     })
 
-    -- Auto-Off when leaving seat
-    RunService.Heartbeat:Connect(function()
-        if fly.enabled and not seated() then setEnabled(false) end
-    end)
-
-    print("[carfly v5.1.0] loaded (minimal UI, SafeFly active)")
 end
