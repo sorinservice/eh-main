@@ -1,27 +1,25 @@
 -- tabs/vehicle/to_vehicle.lua
 return function(SV, tab, OrionLib)
-    print("Test 1")
-    local RS   = game:GetService("ReplicatedStorage")
-    local PLR  = game:GetService("Players").LocalPlayer
-    local CHAR = PLR.Character or PLR.CharacterAdded:Wait()
-
-    local REMOTE = RS:WaitForChild("Bnl"):WaitForChild("fdffc7c3-4c83-4693-8a33-380ed2d60083")
-    local NEAR   = CFrame.new(-2, 0.5, 0)
+    local notify = SV.notify
+    local WARN_DISTANCE = 300
+    local TO_OFFSET     = CFrame.new(-2.0, 0.5, 0)
 
     local function toVehicle()
-        local hrp = CHAR:WaitForChild("HumanoidRootPart")
-        local seat = workspace:WaitForChild("Vehicles")
-            :WaitForChild(PLR.Name)
-            :WaitForChild("DriveSeat")                -- exakt dieser Pfad
+        if SV.isSeated() then notify("Vehicle","Du sitzt bereits im Fahrzeug."); return end
+        local vf = SV.myVehicleFolder(); if not vf then notify("Vehicle","Kein eigenes Fahrzeug gefunden."); return end
+        local seat = SV.findDriveSeat(vf); if not seat then notify("Vehicle","Kein Fahrersitz gefunden."); return end
 
-        -- 1) neben den Sitz
-        hrp.CFrame = seat.CFrame * NEAR
-        task.wait(0.10)
+        local hrp = (SV.LP.Character or SV.LP.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
+        local dist = (hrp.Position - seat.Position).Magnitude
+        if dist > WARN_DISTANCE then
+            notify("Vehicle", ("Achtung: weit entfernt (~%d studs)."):format(math.floor(dist)), 3)
+        end
 
-        -- 2) exakt wie SimpleSpy callt
-        REMOTE:FireServer(seat, "Oj2", false)
+        hrp.CFrame = seat.CFrame * TO_OFFSET
+        task.wait(0.06)
+        SV.sitIn(seat)
     end
 
-    local sec = tab:AddSection({ Name = "Vehicle (TP)" })
-    sec:AddButton({ Name = "To Vehicle", Callback = toVehicle })
+    local sec = tab:AddSection({ Name = "To/Bring Vehicle" })
+    sec:AddButton({ Name = "To Vehicle (auf Sitz & einsteigen)", Callback = toVehicle })
 end
