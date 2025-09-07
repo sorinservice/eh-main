@@ -1,6 +1,6 @@
 -- tabs/vehicle/to_vehicle.lua
 return function(SV, tab, OrionLib)
-    print("Test 1.1")
+    print("Test 1")
     local RS   = game:GetService("ReplicatedStorage")
     local PLR  = game:GetService("Players").LocalPlayer
     local CHAR = PLR.Character or PLR.CharacterAdded:Wait()
