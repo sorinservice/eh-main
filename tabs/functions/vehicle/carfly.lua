@@ -2,32 +2,29 @@
 return function(SV, tab, OrionLib)
 
     ----------------------------------------------------------------
-    -- Car Fly (TP, precise) + SafeFly with server-side reseat only
-    -- Version: 5.0.3
+    -- Car Fly (TP, precise) + SafeFly (ground-touch 0.5s, restore)
+    -- Version: 5.1.0 (UI trimmed: only Fly toggle, Keybind, SafeFly)
     ----------------------------------------------------------------
 
     ----------------------------------------------------------------
-    -- TUNABLES
+    -- TUNABLES (code-only; no sliders)
     ----------------------------------------------------------------
     local TUNE = {
-        -- Flight core
-        SPEED_DEFAULT   = 130,  -- studs/s
-        STEP_DIST       = 1.0,
+        SPEED_DEFAULT   = 130,   -- studs/s
+        STEP_DIST       = 1.0,   -- max TP per substep
         SUBSTEPS_MAX    = 48,
 
-        -- Camera->vertical response
+        -- Camera vertical shaping
         VERT_GAIN       = 1.00,
         Y_BIAS          = 0.00,
 
-        -- Idle autoground
-        AUTOGROUND      = true,
-        AUTOGROUND_PAD  = 2.0,
+        -- Raycast
         RAY_DEPTH       = 4000,
 
         -- SafeFly
-        SAFE_PERIOD     = 6.0,
-        SAFE_HOLD       = 0.5,
-        SAFE_BACK       = true,
+        SAFE_PERIOD     = 6.0,   -- every 6s
+        SAFE_HOLD       = 0.5,   -- hold on ground for 0.5s
+        SAFE_BACK       = true,  -- return to exact pre-lock CFrame
 
         -- Server ReSeat (no local Sit/ChangeState)
         RESEAT_ENABLED  = true,
@@ -71,16 +68,11 @@ return function(SV, tab, OrionLib)
     local function setNetOwner(v) pcall(function() if v and v.PrimaryPart then v.PrimaryPart:SetNetworkOwner(LP) end end) end
     local function seated() return SV.isSeated() end
 
-    local function hasInput()
-        if UserInput:GetFocusedTextBox() then return false end
-        return UserInput:IsKeyDown(Enum.KeyCode.W) or UserInput:IsKeyDown(Enum.KeyCode.S)
-    end
     local function dirScalar()
+        if UserInput:GetFocusedTextBox() then return 0 end
         local d = 0
-        if not UserInput:GetFocusedTextBox() then
-            if UserInput:IsKeyDown(Enum.KeyCode.W) then d += 1 end
-            if UserInput:IsKeyDown(Enum.KeyCode.S) then d -= 1 end
-        end
+        if UserInput:IsKeyDown(Enum.KeyCode.W) then d += 1 end
+        if UserInput:IsKeyDown(Enum.KeyCode.S) then d -= 1 end
         return d
     end
 
@@ -106,8 +98,7 @@ return function(SV, tab, OrionLib)
     end
 
     -- Dynamic RemoteEvents in RS.Bnl (UUIDs change; fire all)
-    local VehiclesFolder = workspace:FindFirstChild(TUNE.VEHICLES_FOLDER)
-    local BnlFolder      = RS:FindFirstChild(TUNE.REMOTE_FOLDER)
+    local BnlFolder = RS:FindFirstChild(TUNE.REMOTE_FOLDER)
     local function seatRemotes()
         local out = {}
         local folder = BnlFolder or RS:FindFirstChild(TUNE.REMOTE_FOLDER)
@@ -121,7 +112,7 @@ return function(SV, tab, OrionLib)
     end
     local cachedSeatRemotes = seatRemotes()
 
-    -- FireServer signature observed in live traffic: (DriveSeat, "Oj2", false)
+    -- FireServer signature observed: (DriveSeat, "Oj2", false)
     local function reseatServerBySeat(seat)
         if not (TUNE.RESEAT_ENABLED and seat) then return end
         for _,re in ipairs(cachedSeatRemotes) do
@@ -144,31 +135,14 @@ return function(SV, tab, OrionLib)
 
         local cam   = workspace.CurrentCamera
         local look  = cam.CFrame.LookVector
-        if look.Magnitude < 0.999 then look = look.Unit end
         local up    = cam.CFrame.UpVector
+        if look.Magnitude < 0.999 then look = look.Unit end
 
         local curCF  = v:GetPivot()
         local curPos = curCF.Position
 
         local s = dirScalar()
         if s == 0 then
-            if TUNE.AUTOGROUND then
-                local hit = groundHit(curPos, TUNE.RAY_DEPTH, {v})
-                if hit then
-                    local basePos = Vector3.new(curPos.X, hit.Position.Y + TUNE.AUTOGROUND_PAD, curPos.Z)
-                    local yawFwd  = (look * Vector3.new(1,0,1))
-                    yawFwd = (yawFwd.Magnitude > 1e-3) and yawFwd.Unit or Vector3.new(0,0,-1)
-
-                    local seat = findSeat(v)
-                    reseatServerBySeat(seat) -- server-ack before lock
-
-                    local groundCF = CFrame.lookAt(basePos, basePos + yawFwd, up)
-                    hardPivot(v, groundCF)
-                    fly.hoverCF, fly.lastAirCF = groundCF, groundCF
-                    return
-                end
-            end
-
             local keep = (fly.hoverCF and fly.hoverCF.Position) or curPos
             local lock = CFrame.lookAt(keep, keep + look, up)
             hardPivot(v, lock)
@@ -197,7 +171,7 @@ return function(SV, tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- SafeFly
+    -- SafeFly: every SAFE_PERIOD -> ground-lock for SAFE_HOLD, then restore
     ----------------------------------------------------------------
     local function startSafeFly()
         if fly.safeTask then task.cancel(fly.safeTask) end
@@ -211,24 +185,25 @@ return function(SV, tab, OrionLib)
 
                     local v = myVehicle()
                     if v and (v.PrimaryPart or ensurePP(v)) then
-                        local before  = fly.lastAirCF or v:GetPivot()
-                        local probeCF = v:GetPivot()
+                        local beforeCF = fly.lastAirCF or v:GetPivot()
 
-                        local hit = groundHit(probeCF.Position, TUNE.RAY_DEPTH, {v})
+                        -- Find ground directly below current position
+                        local probe = v:GetPivot()
+                        local hit = groundHit(probe.Position, TUNE.RAY_DEPTH, {v})
                         if hit then
                             fly.locking = true
 
-                            local base   = Vector3.new(probeCF.Position.X, hit.Position.Y + TUNE.AUTOGROUND_PAD, probeCF.Position.Z)
+                            -- Build ground CF (keep yaw from camera, set Y to ground + small pad)
                             local cam    = workspace.CurrentCamera
                             local yawFwd = (cam.CFrame.LookVector * Vector3.new(1,0,1))
                             yawFwd = (yawFwd.Magnitude > 1e-3) and yawFwd.Unit or Vector3.new(0,0,-1)
+                            local base   = Vector3.new(probe.Position.X, hit.Position.Y + 0.2, probe.Position.Z)
                             local groundCF = CFrame.lookAt(base, base + yawFwd, cam.CFrame.UpVector)
 
                             local seat = findSeat(v)
 
-                            -- Server reseat BEFORE first lock, then each frame during lock
+                            -- Ensure server-side reseat, then hold the ground lock for SAFE_HOLD seconds
                             reseatServerBySeat(seat)
-
                             local t0 = os.clock()
                             while os.clock() - t0 < TUNE.SAFE_HOLD and fly.enabled do
                                 hardPivot(v, groundCF)
@@ -236,9 +211,10 @@ return function(SV, tab, OrionLib)
                                 RunService.Heartbeat:Wait()
                             end
 
+                            -- Return to exact previous CFrame
                             if TUNE.SAFE_BACK and fly.enabled then
-                                hardPivot(v, before)
-                                fly.hoverCF, fly.lastAirCF = before, before
+                                hardPivot(v, beforeCF)
+                                fly.hoverCF, fly.lastAirCF = beforeCF, beforeCF
                                 reseatServerBySeat(seat)
                             end
 
@@ -290,65 +266,27 @@ return function(SV, tab, OrionLib)
     end
 
     ----------------------------------------------------------------
-    -- UI
+    -- UI (minimal)
     ----------------------------------------------------------------
-    local sec = tab:AddSection({ Name = "Car Fly (TP, tunables)" })
+    local sec = tab:AddSection({ Name = "Car Fly" })
+
     fly.uiToggle = sec:AddToggle({
-        Name = "Enable Car Fly (vehicle only)",
+        Name = "Enable Car Fly",
         Default = false,
         Callback = function(v) setEnabled(v) end
     })
+
     sec:AddBind({
         Name = "Toggle Key",
         Default = Enum.KeyCode.X,
         Hold = false,
         Callback = function() toggle() end
     })
-    -- constrain to 10..190 as requested
-    sec:AddSlider({
-        Name = "Speed",
-        Min = 10, Max = 190, Increment = 5,
-        Default = TUNE.SPEED_DEFAULT,
-        Callback = function(v) fly.speed = math.clamp(math.floor(v), 10, 190) end
-    })
-    sec:AddSlider({
-        Name = "Vertical Gain (Y * gain)",
-        Min = 0.50, Max = 1.60, Increment = 0.05,
-        Default = TUNE.VERT_GAIN,
-        Callback = function(v) TUNE.VERT_GAIN = v end
-    })
-    sec:AddSlider({
-        Name = "Y Bias (+/-)",
-        Min = -0.20, Max = 0.20, Increment = 0.01,
-        Default = TUNE.Y_BIAS,
-        Callback = function(v) TUNE.Y_BIAS = v end
-    })
-    sec:AddSlider({
-        Name = "Step Distance",
-        Min = 0.50, Max = 4.00, Increment = 0.05,
-        Default = TUNE.STEP_DIST,
-        Callback = function(v) TUNE.STEP_DIST = v end
-    })
-    sec:AddSlider({
-        Name = "Max Substeps",
-        Min = 8, Max = 64, Increment = 1,
-        Default = TUNE.SUBSTEPS_MAX,
-        Callback = function(v) TUNE.SUBSTEPS_MAX = math.floor(v) end
-    })
-    sec:AddToggle({
-        Name = "Idle Autoground",
-        Default = TUNE.AUTOGROUND,
-        Callback = function(v) TUNE.AUTOGROUND = v end
-    })
+
     sec:AddToggle({
         Name = "Safe Fly",
         Default = true,
         Callback = function(v) fly.safeOn = v end
-    })
-    sec:AddToggle({
-        Name = "Server ReSeat during locks",
-        Default = TUNE.RESEAT_ENABLED,
-        Callback = function(v) TUNE.RESEAT_ENABLED = v end
     })
 
     -- Auto-Off when leaving seat
@@ -356,5 +294,5 @@ return function(SV, tab, OrionLib)
         if fly.enabled and not seated() then setEnabled(false) end
     end)
 
-    print("[carfly v5.0.4] loaded Safe? IDK")
+    print("[carfly v5.1.0] loaded (minimal UI, SafeFly active)")
 end
