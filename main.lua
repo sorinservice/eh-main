@@ -183,7 +183,8 @@ local TABS = {
     Player      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/movement.lua",
     Aimbot      = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/aimbot.lua",
     Locator     = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/locator.lua",
-    VehicleMod  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/vehicle.lua"
+    VehicleMod  = "https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/vehicle.lua",
+    Police      ="https://raw.githubusercontent.com/sorinservice/eh-main/dev/tabs/loader/police.lua"
 }
 
 -- Loader-Helfer
@@ -245,11 +246,12 @@ end
 
 -- Tabs laden (mit Icon-Keys, die in deiner Icon-Map der orion.lua gemappt werden)
 attachTab("Info",    TABS.Info,             "info")
-attachTab("Vehicle Mod", TABS.VehicleMod,  "main")
+attachTab("Vehicle Mod", TABS.VehicleMod,   "main")
 attachTab("Aimbot", TABS.Aimbot,            "main")
 attachTab("ESPs", TABS.ESPs,                "main")
 attachTab("Graphics", TABS.Graphics,        "main")
 attachTab("Player", TABS.Player,            "main")
+attachTab("Police", TABS.Player,            "main")
 attachTab("Bypass",  TABS.Bypass,           "main")
 attachTab("Misc", TABS.Misc,                "main")
 attachTab("Locator", TABS.Locator,          "main")
