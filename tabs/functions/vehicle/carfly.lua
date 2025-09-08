@@ -142,35 +142,24 @@ local function safeLockOnce()
     local ignore   = buildIgnoreList(v)
     local cur      = v:GetPivot()
 
-    -- Bodenhöhe bestimmen
+    -- Ziel-Bodenhöhe berechnen
     local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
     local halfY    = getHalfHeight(v)
-
-    -- Jetzt: Wagen tiefer ansetzen = knalliger Press
     local targetY  = hitY + halfY - TUNE.PRESS_EXTRA
+
+    -- Orientierung beibehalten, nur Y knallig setzen
     local groundCF = keepOrientationAtY(v, targetY)
 
     fly.locking = true
 
-    -- ALLE Teile fixieren
-    for _,p in ipairs(v:GetDescendants()) do
-        if p:IsA("BasePart") then p.Anchored = true end
-    end
-
-    -- Knallig auf den Boden setzen
-    hardPivot(v, groundCF)
-
-    -- Während SAFE_HOLD jede Frame fix halten
+    -- Während SAFE_HOLD jede Heartbeat-Frame "auf den Boden prügeln"
     local t = 0
     while t < TUNE.SAFE_HOLD and fly.enabled do
         hardPivot(v, groundCF)
         t += RunService.Heartbeat:Wait() or 0
     end
 
-    -- Zurück in den Flugzustand + Unlock
-    for _,p in ipairs(v:GetDescendants()) do
-        if p:IsA("BasePart") then p.Anchored = false end
-    end
+    -- Danach zurück in die Luft-Position
     if fly.enabled then
         hardPivot(v, beforeCF)
         fly.lastAirCF = beforeCF
@@ -221,5 +210,5 @@ end
     sec:AddBind({ Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false, Callback=function() toggle() end })
     sec:AddToggle({ Name="Safe Fly", Default=true, Callback=function(v) fly.safeOn=v; fly.timer=0 end })
 
-    print("[carfly_tp v5.4.2] loaded")
+    print("[carfly_tp v5.4.3] loaded")
 end
