@@ -45,24 +45,25 @@ return function(SV, tab, OrionLib)
     end
 
     -- Liefert kompletten Hit (Part oder Terrain)
-    local function getDownHit(x, z, ignoreList)
-        local origin  = Vector3.new(x, 1e5, z)
-        local dir     = Vector3.new(0, -2e5, 0)
+local function getDownHit(pos, ignoreList)
+    local origin  = pos + Vector3.new(0, TUNE.RAY_DEPTH * 0.5, 0)
+    local dir     = Vector3.new(0, -TUNE.RAY_DEPTH, 0)
 
-        -- 1) alles außer Fahrzeug
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-        params.FilterDescendantsInstances = ignoreList or {}
-        local hit = workspace:Raycast(origin, dir, params)
-        if hit then return hit end
+    -- 1) alles außer Fahrzeug
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    params.FilterDescendantsInstances = ignoreList or {}
+    local hit = workspace:Raycast(origin, dir, params)
+    if hit then return hit end
 
-        -- 2) Fallback Terrain
-        local p2 = RaycastParams.new()
-        p2.FilterType = Enum.RaycastFilterType.Whitelist
-        p2.FilterDescendantsInstances = {workspace.Terrain}
-        local hit2 = workspace:Raycast(origin, dir, p2)
-        return hit2
-    end
+    -- 2) Fallback Terrain
+    local p2 = RaycastParams.new()
+    p2.FilterType = Enum.RaycastFilterType.Whitelist
+    p2.FilterDescendantsInstances = {workspace.Terrain}
+    local hit2 = workspace:Raycast(origin, dir, p2)
+    return hit2
+end
+
 
     local function getHalfHeight(v)
         local ok, cf, size = pcall(v.GetBoundingBox, v)
@@ -140,7 +141,7 @@ return function(SV, tab, OrionLib)
         local ignore   = buildIgnoreList(v)
         local cur      = v:GetPivot()
 
-        local hit = getDownHit(cur.X, cur.Z, ignore)
+        local hit = getDownHit(cur.Position, ignore)
         if not hit then return end
 
         local halfY    = getHalfHeight(v)
@@ -148,13 +149,14 @@ return function(SV, tab, OrionLib)
         local groundCF = keepOrientationAtY(v, targetY)
 
         fly.locking = true
-        local t = 0
-        while t < TUNE.SAFE_HOLD and fly.enabled do
-            local rehit = getDownHit(v:GetPivot().X, v:GetPivot().Z, ignore) or hit
-            local ty    = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
-            hardPivot(v, keepOrientationAtY(v, ty))
-            t += RunService.Heartbeat:Wait() or 0
-        end
+local t = 0
+while t < TUNE.SAFE_HOLD and fly.enabled do
+    local rehit = getDownHit(v:GetPivot().Position, ignore) or hit
+    local ty    = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
+    hardPivot(v, keepOrientationAtY(v, ty))
+    t += RunService.Heartbeat:Wait() or 0
+end
+
 
         if fly.enabled then
             hardPivot(v, beforeCF)
