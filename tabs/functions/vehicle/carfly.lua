@@ -1,7 +1,7 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
 
-    -- Version: 5.3.2
+    -- Version: 5.4.0
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
@@ -16,9 +16,8 @@ return function(SV, tab, OrionLib)
 
         SAFE_PERIOD   = 6.0,
         SAFE_HOLD     = 1.0,          -- 1 Sekunde
-        RAY_DEPTH     = 12000,
-        GROUND_PAD    = 0.02,         -- Ziel: Unterkante = hitY + pad
-        CORRECT_ITERS = 5,            -- Korrekturschleifen zum "Anpressen"
+        RAY_DEPTH     = 20000,        -- extra groß
+        GROUND_PAD    = 0.02,
     }
 
     local function myVehicle() return SV.myVehicleFolder() end
@@ -35,29 +34,49 @@ return function(SV, tab, OrionLib)
     end
     local function hardPivot(v, cf) zeroVel(v); v:PivotTo(cf) end
 
-    local function rayDown(origin, depth, blacklist)
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-        params.FilterDescendantsInstances = blacklist or {}
-        return workspace:Raycast(origin, Vector3.new(0, -(depth or TUNE.RAY_DEPTH), 0), params)
+    -- IGNORE-Liste: ALLE Teile des Fahrzeugs (nicht nur das Model/Fold­er)
+    local function buildIgnoreList(v)
+        local ignore = {v}
+        for _,d in ipairs(v:GetDescendants()) do
+            if d:IsA("BasePart") then table.insert(ignore, d) end
+        end
+        return ignore
     end
 
-    local function groundYBelow(pos, ignoreModel)
-        local origin = pos + Vector3.new(0, TUNE.RAY_DEPTH*0.5, 0)
-        local hit = rayDown(origin, TUNE.RAY_DEPTH, ignoreModel and {ignoreModel} or {})
+    -- Downcast garantiert von SEHR weit oben, Fahrzeug komplett ignoriert
+    local function groundYBelowXZ(x, z, ignoreList)
+        local originY = 1e5
+        local origin  = Vector3.new(x, originY, z)
+        local dir     = Vector3.new(0, -2e5, 0)
+
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        params.FilterDescendantsInstances = ignoreList or {}
+
+        local hit = workspace:Raycast(origin, dir, params)
         if hit then return hit.Position.Y end
+
         -- Terrain-Whitelist-Fallback
-        local params2 = RaycastParams.new()
-        params2.FilterType = Enum.RaycastFilterType.Whitelist
-        params2.FilterDescendantsInstances = {workspace.Terrain}
-        local hit2 = workspace:Raycast(origin, Vector3.new(0, -TUNE.RAY_DEPTH, 0), params2)
+        local p2 = RaycastParams.new()
+        p2.FilterType = Enum.RaycastFilterType.Whitelist
+        p2.FilterDescendantsInstances = {workspace.Terrain}
+        local hit2 = workspace:Raycast(origin, dir, p2)
         if hit2 then return hit2.Position.Y end
+
         return 0
     end
 
-    local function bboxBottomY(v)
-        local cf, size = v:GetBoundingBox()
-        return cf.Position.Y - size.Y * 0.5, cf, size
+    local function getHalfHeight(v)
+        local ok, cf, size = pcall(v.GetBoundingBox, v)
+        if ok and size then return size.Y * 0.5 end
+        local pp = v.PrimaryPart
+        return pp and (pp.Size.Y * 0.5) or 3
+    end
+
+    local function keepOrientationAtY(v, y)
+        local cur = v:GetPivot()
+        -- behalte Orientierung, setze nur Y neu
+        return CFrame.new(Vector3.new(cur.X, y, cur.Z)) * (cur - cur.Position)
     end
 
     local function dirScalar()
@@ -73,6 +92,7 @@ return function(SV, tab, OrionLib)
         hbConn=nil, locking=false, uiToggle=nil, lastAirCF=nil, debounce=0, timer=0,
     }
 
+    -- === Flug ===
     local function step(dt)
         if not fly.enabled or fly.locking then return end
         local v = myVehicle(); if not v then return end
@@ -112,61 +132,43 @@ return function(SV, tab, OrionLib)
         fly.lastAirCF = final
     end
 
-    -- Boden-Anpressung: korrigiert die Höhe über BoundingBox-Unterkante
-    local function computeGroundLockCF(v)
-        local _, curBboxCF = bboxBottomY(v)
-        local pos = curBboxCF.Position
-        local targetHitY = groundYBelow(pos, v)
-        local cam = workspace.CurrentCamera
-        local yawFwd = (cam.CFrame.LookVector * Vector3.new(1,0,1))
-        yawFwd = (yawFwd.Magnitude > 1e-3) and yawFwd.Unit or Vector3.new(0,0,-1)
-
-        -- Ausgangsorientierung: Kamera-Yaw + Up
-        local targetCF = CFrame.lookAt(pos, pos + yawFwd, cam.CFrame.UpVector)
-
-        -- Iterative Korrektur: Unterkante exakt = hitY + pad
-        for _ = 1, TUNE.CORRECT_ITERS do
-            hardPivot(v, targetCF)
-            RunService.Heartbeat:Wait() -- Physik einmal laufen lassen
-            local bottomY, curCF, size = bboxBottomY(v)
-            local hitY = groundYBelow(curCF.Position, v) -- nach Pivot neu messen
-            local wantBottom = hitY + TUNE.GROUND_PAD
-            local dy = wantBottom - bottomY
-            if math.abs(dy) < 0.005 then
-                -- ausreichend exakt
-                targetCF = CFrame.lookAt(Vector3.new(curCF.Position.X, curCF.Position.Y + dy, curCF.Position.Z), Vector3.new(curCF.Position.X, curCF.Position.Y + dy, curCF.Position.Z) + yawFwd, cam.CFrame.UpVector)
-                break
-            end
-            targetCF = CFrame.lookAt(Vector3.new(curCF.Position.X, curCF.Position.Y + dy, curCF.Position.Z), Vector3.new(curCF.Position.X, curCF.Position.Y + dy, curCF.Position.Z) + yawFwd, cam.CFrame.UpVector)
-        end
-
-        return v:GetPivot() -- nach letzter Korrektur ist Pivot bereits passend
-    end
-
+    -- === Safe-Lock: PRESST definitiv auf Boden ===
     local function safeLockOnce()
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
 
         local beforeCF = fly.lastAirCF or v:GetPivot()
+        local ignore   = buildIgnoreList(v)
+        local cur      = v:GetPivot()
 
+        -- Boden-Y exakt bestimmen (unter X/Z des Fahrzeugs)
+        local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
+        local halfY    = getHalfHeight(v)
+        local targetY  = hitY + halfY + TUNE.GROUND_PAD
+
+        -- Freeze hart: ankern, dann Y setzen, jede Physik nullen
         fly.locking = true
-
-        -- Ankern zum harten Anpressen
         for _,p in ipairs(v:GetDescendants()) do
-            if p:IsA("BasePart") then p.Anchored = true end
+            if p:IsA("BasePart") then
+                p.Anchored = true
+                p.AssemblyLinearVelocity  = Vector3.zero
+                p.AssemblyAngularVelocity = Vector3.zero
+            end
         end
 
-        -- Korrigiertes Boden-CF ermitteln (Unterkante = hitY + pad)
-        local groundCF = computeGroundLockCF(v)
+        -- EINMAL knackig auf Bodenhöhe setzen (Orientierung beibehalten)
+        local groundCF = keepOrientationAtY(v, targetY)
+        hardPivot(v, groundCF)
 
-        -- Hold-Phase bei exakt angepresster Position
+        -- Hold 1.0s: weiterhin fix auf Boden
         local t = 0
         while t < TUNE.SAFE_HOLD and fly.enabled do
+            -- nochmal sicherheitshalber halten (falls Map sich bewegt)
             hardPivot(v, groundCF)
             t += RunService.Heartbeat:Wait() or 0
         end
 
-        -- Zurück + deankern
+        -- Unfreeze und exakt zurück
         for _,p in ipairs(v:GetDescendants()) do
             if p:IsA("BasePart") then p.Anchored = false end
         end
@@ -177,6 +179,7 @@ return function(SV, tab, OrionLib)
         fly.locking = false
     end
 
+    -- === Enable/Disable ===
     local function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
@@ -219,5 +222,5 @@ return function(SV, tab, OrionLib)
     sec:AddBind({ Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false, Callback=function() toggle() end })
     sec:AddToggle({ Name="Safe Fly", Default=true, Callback=function(v) fly.safeOn=v; fly.timer=0 end })
 
-    print("[carfly_tp] v5.3.2 loaded (SafeFly presses car to ground)")
+    print("[carfly_tp] v5.4.0 loaded (SafeFly presses to ground, blacklist fix, high-cast)")
 end
