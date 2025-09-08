@@ -14,7 +14,7 @@ return function(SV, tab, OrionLib)
         VERT_GAIN     = 1.00,
         Y_BIAS        = 0.00,
 
-        SAFE_PERIOD   = 5.5,
+        SAFE_PERIOD   = 5.0,
         SAFE_HOLD     = 1.0,          -- Dauer des Locks (Sekunden)
         RAY_DEPTH     = 20000,
         PRESS_EXTRA   = 1.5,          -- wie stark nach unten pressen
@@ -213,5 +213,5 @@ return function(SV, tab, OrionLib)
         end
     end)
 
-    print("[carfly_tp v5.4.6] loaded (SafeFly works on any object)")
+    print("[carfly_tp v5.4.6] loaded")
 end
