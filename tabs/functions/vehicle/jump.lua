@@ -28,6 +28,4 @@ return function(SV, tab, OrionLib)
     end
 
     tab:AddButton({ Name = "Vehicle Jump", Callback = doJump })
-
-    print(string.format("[veh_jump] v1.1.1 up=%d fwd=%d", TUNE.POWER_UP, TUNE.POWER_FWD))
 end
