@@ -115,7 +115,7 @@ return function(SV, tab, OrionLib)
     })
     sec:AddSlider({
         Name = "Speed-Cap (stud/s)",
-        Min=30, Max=200, Increment=5, Default=PD.speedCap,
+        Min=30, Max=400, Increment=5, Default=PD.speedCap,
         Callback = function(v) PD.speedCap = math.floor(v) end
     })
 end
