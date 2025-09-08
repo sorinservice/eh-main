@@ -209,5 +209,5 @@ return function(SV, tab, OrionLib)
         end
     end)
 
-    print("[carfly_tp v5.4.5] loaded (SafeFly press, no anchor, auto-off)")
+    print("[carfly_tp v5.4.5] loaded")
 end
