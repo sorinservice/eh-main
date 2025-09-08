@@ -18,6 +18,7 @@ return function(SV, tab, OrionLib)
         SAFE_HOLD     = 1.0,          -- 1 Sekunde
         RAY_DEPTH     = 20000,        -- extra groß
         GROUND_PAD    = 0.02,
+        PRESS_EXTRA   = 1.5,
     }
 
     local function myVehicle() return SV.myVehicleFolder() end
@@ -133,51 +134,43 @@ return function(SV, tab, OrionLib)
     end
 
     -- === Safe-Lock: PRESST definitiv auf Boden ===
-    local function safeLockOnce()
-        local v = myVehicle(); if not v then return end
-        if not v.PrimaryPart then if not ensurePP(v) then return end end
+local function safeLockOnce()
+    local v = myVehicle(); if not v then return end
+    if not v.PrimaryPart then if not ensurePP(v) then return end end
 
-        local beforeCF = fly.lastAirCF or v:GetPivot()
-        local ignore   = buildIgnoreList(v)
-        local cur      = v:GetPivot()
+    local beforeCF = fly.lastAirCF or v:GetPivot()
+    local ignore   = buildIgnoreList(v)
+    local cur      = v:GetPivot()
 
-        -- Boden-Y exakt bestimmen (unter X/Z des Fahrzeugs)
-        local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
-        local halfY    = getHalfHeight(v)
-        local targetY  = hitY + halfY + TUNE.GROUND_PAD
+    local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
+    local halfY    = getHalfHeight(v)
 
-        -- Freeze hart: ankern, dann Y setzen, jede Physik nullen
-        fly.locking = true
-        for _,p in ipairs(v:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.Anchored = true
-                p.AssemblyLinearVelocity  = Vector3.zero
-                p.AssemblyAngularVelocity = Vector3.zero
-            end
-        end
+    local targetY  = hitY + halfY - TUNE.PRESS_EXTRA
 
-        -- EINMAL knackig auf Bodenhöhe setzen (Orientierung beibehalten)
-        local groundCF = keepOrientationAtY(v, targetY)
-        hardPivot(v, groundCF)
-
-        -- Hold 1.0s: weiterhin fix auf Boden
-        local t = 0
-        while t < TUNE.SAFE_HOLD and fly.enabled do
-            -- nochmal sicherheitshalber halten (falls Map sich bewegt)
-            hardPivot(v, groundCF)
-            t += RunService.Heartbeat:Wait() or 0
-        end
-
-        -- Unfreeze und exakt zurück
-        for _,p in ipairs(v:GetDescendants()) do
-            if p:IsA("BasePart") then p.Anchored = false end
-        end
-        if fly.enabled then
-            hardPivot(v, beforeCF)
-            fly.lastAirCF = beforeCF
-        end
-        fly.locking = false
+    fly.locking = true
+    for _,p in ipairs(v:GetDescendants()) do
+        if p:IsA("BasePart") then p.Anchored = true end
     end
+
+    local groundCF = keepOrientationAtY(v, targetY)
+    hardPivot(v, groundCF)
+
+    local t = 0
+    while t < TUNE.SAFE_HOLD and fly.enabled do
+        hardPivot(v, groundCF)
+        t += RunService.Heartbeat:Wait() or 0
+    end
+
+    for _,p in ipairs(v:GetDescendants()) do
+        if p:IsA("BasePart") then p.Anchored = false end
+    end
+    if fly.enabled then
+        hardPivot(v, beforeCF)
+        fly.lastAirCF = beforeCF
+    end
+    fly.locking = false
+end
+
 
     -- === Enable/Disable ===
     local function setEnabled(on)
@@ -222,5 +215,5 @@ return function(SV, tab, OrionLib)
     sec:AddBind({ Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false, Callback=function() toggle() end })
     sec:AddToggle({ Name="Safe Fly", Default=true, Callback=function(v) fly.safeOn=v; fly.timer=0 end })
 
-    print("[carfly_tp] v5.4.0 loaded (SafeFly presses to ground, blacklist fix, high-cast)")
+    print("[carfly_tp v5.4.1] loaded")
 end
