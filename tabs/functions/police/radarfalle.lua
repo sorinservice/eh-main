@@ -1,28 +1,30 @@
 -- tabs/functions/police/radarfalle.lua
 return function(SV, tab, OrionLib)
-    -- radar v1.2.0 (Origin = player; Dir = to vehicle; range=1500)
+    -- radar v1.3.0 (fires only when Radar-Tool equipped, no keybind, range=1500)
 
     local RunService = game:GetService("RunService")
     local Players    = game:GetService("Players")
     local LP         = Players.LocalPlayer
 
-    -- Remote wie vom Spy
+    -- Remote (wie Spy)
     local REMOTE = (function()
         local rs = game:GetService("ReplicatedStorage")
         local bnl = rs:WaitForChild("Bnl")
         return bnl:WaitForChild("bbb7c252-304d-4582-b2a0-89eb9d3a0855")
     end)()
 
-    -- Spy-kompatible Fabrik
+    -- Spy-kompatibel
     local vector = { create = Vector3.new }
 
     local cfg = {
         enabled       = false,
-        MAX_DIST      = 1500,  -- angefragt
-        TICK          = 0.08,  -- Scanrate
-        PER_TARGET_CD = 0.30,  -- pro Fahrzeug drosseln
-        GLOBAL_CD     = 0.03,  -- global drosseln
-        MAX_PER_TICK  = 6,     -- nicht unendlich Fahrzeuge pro Tick schießen
+        MAX_DIST      = 1500,
+        TICK          = 0.08,
+        PER_TARGET_CD = 0.30,
+        GLOBAL_CD     = 0.03,
+        MAX_PER_TICK  = 6,
+        -- Tool-Erkennung: passe bei Bedarf die Namen an
+        TOOL_NAMES    = {["Radar"]=true, ["RadarGun"]=true, ["Radar Gun"]=true}
     }
 
     local lastGlobal = 0
@@ -44,19 +46,31 @@ return function(SV, tab, OrionLib)
 
     local function hrp()
         local ch = LP.Character or LP.CharacterAdded:Wait()
-        return ch:FindFirstChild("HumanoidRootPart")
+        return ch and ch:FindFirstChild("HumanoidRootPart")
     end
 
-    -- Mündungs-/Radar-Position (leicht nach vorn/oben, wie echte Gun)
+    -- Prüft, ob ein „Radar“-Tool ausgerüstet ist (Tool parent = Character)
+    local function radarEquipped()
+        local ch = LP.Character
+        if not ch then return false end
+        for _,inst in ipairs(ch:GetChildren()) do
+            if inst:IsA("Tool") and cfg.TOOL_NAMES[inst.Name] then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Mündungs-/Radar-Position leicht vor/über HRP
     local function muzzleOrigin()
         local r = hrp(); if not r then return nil end
         return r.Position + r.CFrame.LookVector * 1.5 + Vector3.new(0, 1.2, 0)
     end
 
-    local function canFire(v, rpos)
+    local function canFire(v, origin)
         local pp = v.PrimaryPart or ensurePP(v)
         if not pp then return false end
-        if (pp.Position - rpos).Magnitude > cfg.MAX_DIST then return false end
+        if (pp.Position - origin).Magnitude > cfg.MAX_DIST then return false end
         local tnext = perTarget[v]
         if tnext and tnext > now() then return false end
         if (now() - lastGlobal) < cfg.GLOBAL_CD then return false end
@@ -70,8 +84,7 @@ return function(SV, tab, OrionLib)
         if mag < 1e-6 then return end
         dir = dir / mag
 
-        -- EXAKT wie Spy: Tool nil-parented + vector.create(...)
-        local toolArg = Instance.new("Tool", nil)
+        local toolArg = Instance.new("Tool", nil) -- exakt wie Spy
         REMOTE:FireServer(
             toolArg,
             vector.create(origin.X, origin.Y, origin.Z),
@@ -100,10 +113,13 @@ return function(SV, tab, OrionLib)
             if acc < cfg.TICK then return end
             acc = 0
 
+            -- Nur scannen, wenn Radar-Tool AUSGERÜSTET ist
+            if not radarEquipped() then return end
+
             local vf = vehiclesFolder(); if not vf then return end
             local origin = muzzleOrigin(); if not origin then return end
 
-            -- Fahrzeuge grob nach Distanz sortieren (näher zuerst)
+            -- Kandidaten nach Distanz sortieren
             local candidates = {}
             for _,v in ipairs(vf:GetChildren()) do
                 local pp = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
@@ -130,19 +146,13 @@ return function(SV, tab, OrionLib)
         end
     end
 
-    -- UI (nur Toggle + Keybind)
+    -- UI: nur Toggle (kein Keybind)
     local sec = tab:AddSection({ Name = "Radarfalle" })
-    local tgl = sec:AddToggle({
-        Name = "Auto-Radar",
+    sec:AddToggle({
+        Name = "Auto-Radar (Tool muss ausgerüstet sein)",
         Default = false,
         Callback = function(v) setEnabled(v) end
     })
-    sec:AddBind({
-        Name = "Toggle Key",
-        Default = Enum.KeyCode.R,
-        Hold = false,
-        Callback = function() tgl:Set(not cfg.enabled); setEnabled(not cfg.enabled) end
-    })
 
-    print("[police/radarfalle v1.2.0] loaded (origin=player muzzle, dir=to vehicle, range=1500)")
+    print("[police/radarfalle v1.3.0] loaded (equip-gated, origin=HRP, range=1500, no keybind)")
 end
