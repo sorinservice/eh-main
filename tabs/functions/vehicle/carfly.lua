@@ -133,6 +133,13 @@ end
     end
 
     -- === Safe-Lock (pausiert auf Boden ODER Objekten) ===
+    -- === Safe-Lock (pausiert auf Boden ODER Objekten) ===
+    local function keepOrientationAtY(v, y)
+        local cur = v:GetPivot()
+        local pos = Vector3.new(cur.X, y, cur.Z)
+        return CFrame.new(pos) * CFrame.fromMatrix(Vector3.new(), cur.XVector, cur.YVector, cur.ZVector)
+    end
+
     local function safeLockOnce()
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
@@ -149,14 +156,13 @@ end
         local groundCF = keepOrientationAtY(v, targetY)
 
         fly.locking = true
-local t = 0
-while t < TUNE.SAFE_HOLD and fly.enabled do
-    local rehit = getDownHit(v:GetPivot().Position, ignore) or hit
-    local ty    = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
-    hardPivot(v, keepOrientationAtY(v, ty))
-    t += RunService.Heartbeat:Wait() or 0
-end
-
+        local t = 0
+        while t < TUNE.SAFE_HOLD and fly.enabled do
+            local rehit = getDownHit(v:GetPivot().Position, ignore) or hit
+            local ty    = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
+            hardPivot(v, keepOrientationAtY(v, ty))
+            t += RunService.Heartbeat:Wait() or 0
+        end
 
         if fly.enabled then
             hardPivot(v, beforeCF)
@@ -164,6 +170,7 @@ end
         end
         fly.locking = false
     end
+
 
     -- === Enable/Disable ===
     function setEnabled(on)
