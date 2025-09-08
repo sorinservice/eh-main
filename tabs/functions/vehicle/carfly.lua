@@ -1,7 +1,7 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
 
-    -- Version: 5.4.4
+    -- Version: 5.4.5
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
@@ -16,8 +16,7 @@ return function(SV, tab, OrionLib)
 
         SAFE_PERIOD   = 6.0,
         SAFE_HOLD     = 1.0,          -- 1 Sekunde
-        RAY_DEPTH     = 20000,        -- extra groß
-        GROUND_PAD    = 0.02,
+        RAY_DEPTH     = 20000,
         PRESS_EXTRA   = 1.5,          -- wie stark nach unten pressen
     }
 
@@ -131,7 +130,7 @@ return function(SV, tab, OrionLib)
         fly.lastAirCF = final
     end
 
-    -- === Safe-Lock ===
+    -- === Safe-Lock (ohne Anchorn, knallig pressen) ===
     local function safeLockOnce()
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
@@ -147,21 +146,12 @@ return function(SV, tab, OrionLib)
 
         fly.locking = true
 
-        -- Alle Teile fixieren
-        for _,p in ipairs(v:GetDescendants()) do
-            if p:IsA("BasePart") then p.Anchored = true end
-        end
-
         local t = 0
         while t < TUNE.SAFE_HOLD and fly.enabled do
             hardPivot(v, groundCF)
             t += RunService.Heartbeat:Wait() or 0
         end
 
-        -- Unlock + zurück
-        for _,p in ipairs(v:GetDescendants()) do
-            if p:IsA("BasePart") then p.Anchored = false end
-        end
         if fly.enabled then
             hardPivot(v, beforeCF)
             fly.lastAirCF = beforeCF
@@ -219,5 +209,5 @@ return function(SV, tab, OrionLib)
         end
     end)
 
-    print("[carfly_tp v5.4.4] loaded (SafeFly + Auto-Off when leaving seat)")
+    print("[carfly_tp v5.4.5] loaded (SafeFly press, no anchor, auto-off)")
 end
