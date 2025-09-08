@@ -132,45 +132,50 @@ end
         fly.lastAirCF = final
     end
 
-    -- === Safe-Lock (pausiert auf Boden ODER Objekten) ===
-    -- === Safe-Lock (pausiert auf Boden ODER Objekten) ===
-    local function keepOrientationAtY(v, y)
-        local cur = v:GetPivot()
-        local pos = Vector3.new(cur.X, y, cur.Z)
-        return CFrame.new(pos) * CFrame.fromMatrix(Vector3.new(), cur.XVector, cur.YVector, cur.ZVector)
+-- keepOrientationAtY: Rotation beibehalten, nur Y setzen
+local function keepOrientationAtY(v, y)
+    local cur = v:GetPivot()
+    local pos = Vector3.new(cur.X, y, cur.Z)
+    return CFrame.new(pos) * CFrame.fromMatrix(Vector3.new(), cur.XVector, cur.YVector, cur.ZVector)
+end
+
+-- Safe-Lock: nur nach unten "pressen", nie nach oben heben
+local function safeLockOnce()
+    local v = myVehicle(); if not v then return end
+    if not v.PrimaryPart then if not ensurePP(v) then return end end
+
+    local beforeCF = fly.lastAirCF or v:GetPivot()
+    local ignore   = buildIgnoreList(v)
+    local curCF    = v:GetPivot()
+    local curY     = curCF.Position.Y
+
+    local hit = getDownHit(curCF.Position, ignore)
+    if not hit then return end
+
+    local halfY      = getHalfHeight(v)
+    local desiredY   = hit.Position.Y + halfY - TUNE.PRESS_EXTRA
+    local lockedY    = math.min(curY, desiredY)  -- <<< NIE nach oben!
+
+    fly.locking = true
+    local t = 0
+    while t < TUNE.SAFE_HOLD and fly.enabled do
+        -- pro Frame neu messen (bewegte Plattformen) und weiterhin nur nach unten clampen
+        local nowCF  = v:GetPivot()
+        local nowY   = nowCF.Position.Y
+        local rehit  = getDownHit(nowCF.Position, ignore) or hit
+        local wantY  = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
+        lockedY      = math.min(nowY, wantY)  -- weiterhin nur downwards
+
+        hardPivot(v, keepOrientationAtY(v, lockedY))
+        t += RunService.Heartbeat:Wait() or 0
     end
 
-    local function safeLockOnce()
-        local v = myVehicle(); if not v then return end
-        if not v.PrimaryPart then if not ensurePP(v) then return end end
-
-        local beforeCF = fly.lastAirCF or v:GetPivot()
-        local ignore   = buildIgnoreList(v)
-        local cur      = v:GetPivot()
-
-        local hit = getDownHit(cur.Position, ignore)
-        if not hit then return end
-
-        local halfY    = getHalfHeight(v)
-        local targetY  = hit.Position.Y + halfY - TUNE.PRESS_EXTRA
-        local groundCF = keepOrientationAtY(v, targetY)
-
-        fly.locking = true
-        local t = 0
-        while t < TUNE.SAFE_HOLD and fly.enabled do
-            local rehit = getDownHit(v:GetPivot().Position, ignore) or hit
-            local ty    = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
-            hardPivot(v, keepOrientationAtY(v, ty))
-            t += RunService.Heartbeat:Wait() or 0
-        end
-
-        if fly.enabled then
-            hardPivot(v, beforeCF)
-            fly.lastAirCF = beforeCF
-        end
-        fly.locking = false
+    if fly.enabled then
+        hardPivot(v, beforeCF)
+        fly.lastAirCF = beforeCF
     end
-
+    fly.locking = false
+end
 
     -- === Enable/Disable ===
     function setEnabled(on)
@@ -222,5 +227,5 @@ end
         end
     end)
 
-    print("[carfly_tp v0.5.1] loaded")
+    print("[carfly_tp v0.5.2] loaded")
 end
