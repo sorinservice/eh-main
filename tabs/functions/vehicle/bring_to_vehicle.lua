@@ -5,7 +5,7 @@ return function(SV, tab, OrionLib)
     local BRING_UP    = 2
 
     local function bringVehicle()
-        if SV.isSeated() then notify("Vehicle","Schon im Fahrzeug – Bring gesperrt."); return end
+        if SV.isSeated() then notify("Vehicle","Schon im Fahrzeug."); return end
         local vf = SV.myVehicleFolder(); if not vf then notify("Vehicle","Kein Fahrzeug gefunden."); return end
         SV.ensurePrimaryPart(vf)
 
@@ -21,7 +21,6 @@ return function(SV, tab, OrionLib)
         local seat = SV.findDriveSeat(vf)
         if seat then SV.sitIn(seat) end
     end
-
-    local sec = tab:AddSection({ Name = "Vehicle (Bring)" })
-    sec:AddButton({ Name = "Bring Vehicle (vor dich & einsteigen)", Callback = bringVehicle })
+   
+    tab:AddButton({ Name = "Bring Vehicle", Callback = bringVehicle })
 end
