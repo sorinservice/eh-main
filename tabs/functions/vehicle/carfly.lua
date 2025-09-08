@@ -1,7 +1,7 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
 
-    -- Version: 5.4.0
+    -- Version: 5.4.4
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
@@ -18,7 +18,7 @@ return function(SV, tab, OrionLib)
         SAFE_HOLD     = 1.0,          -- 1 Sekunde
         RAY_DEPTH     = 20000,        -- extra groß
         GROUND_PAD    = 0.02,
-        PRESS_EXTRA   = 1.5,
+        PRESS_EXTRA   = 1.5,          -- wie stark nach unten pressen
     }
 
     local function myVehicle() return SV.myVehicleFolder() end
@@ -35,7 +35,6 @@ return function(SV, tab, OrionLib)
     end
     local function hardPivot(v, cf) zeroVel(v); v:PivotTo(cf) end
 
-    -- IGNORE-Liste: ALLE Teile des Fahrzeugs (nicht nur das Model/Fold­er)
     local function buildIgnoreList(v)
         local ignore = {v}
         for _,d in ipairs(v:GetDescendants()) do
@@ -44,7 +43,6 @@ return function(SV, tab, OrionLib)
         return ignore
     end
 
-    -- Downcast garantiert von SEHR weit oben, Fahrzeug komplett ignoriert
     local function groundYBelowXZ(x, z, ignoreList)
         local originY = 1e5
         local origin  = Vector3.new(x, originY, z)
@@ -57,7 +55,6 @@ return function(SV, tab, OrionLib)
         local hit = workspace:Raycast(origin, dir, params)
         if hit then return hit.Position.Y end
 
-        -- Terrain-Whitelist-Fallback
         local p2 = RaycastParams.new()
         p2.FilterType = Enum.RaycastFilterType.Whitelist
         p2.FilterDescendantsInstances = {workspace.Terrain}
@@ -76,7 +73,6 @@ return function(SV, tab, OrionLib)
 
     local function keepOrientationAtY(v, y)
         local cur = v:GetPivot()
-        -- behalte Orientierung, setze nur Y neu
         return CFrame.new(Vector3.new(cur.X, y, cur.Z)) * (cur - cur.Position)
     end
 
@@ -96,6 +92,8 @@ return function(SV, tab, OrionLib)
     -- === Flug ===
     local function step(dt)
         if not fly.enabled or fly.locking then return end
+        if not SV.isSeated() then setEnabled(false); return end
+
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
         setNetOwner(v)
@@ -133,42 +131,46 @@ return function(SV, tab, OrionLib)
         fly.lastAirCF = final
     end
 
-    -- === Safe-Lock: PRESST definitiv auf Boden ===
-local function safeLockOnce()
-    local v = myVehicle(); if not v then return end
-    if not v.PrimaryPart then if not ensurePP(v) then return end end
+    -- === Safe-Lock ===
+    local function safeLockOnce()
+        local v = myVehicle(); if not v then return end
+        if not v.PrimaryPart then if not ensurePP(v) then return end end
 
-    local beforeCF = fly.lastAirCF or v:GetPivot()
-    local ignore   = buildIgnoreList(v)
-    local cur      = v:GetPivot()
+        local beforeCF = fly.lastAirCF or v:GetPivot()
+        local ignore   = buildIgnoreList(v)
+        local cur      = v:GetPivot()
 
-    -- Ziel-Bodenhöhe berechnen
-    local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
-    local halfY    = getHalfHeight(v)
-    local targetY  = hitY + halfY - TUNE.PRESS_EXTRA
+        local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
+        local halfY    = getHalfHeight(v)
+        local targetY  = hitY + halfY - TUNE.PRESS_EXTRA
+        local groundCF = keepOrientationAtY(v, targetY)
 
-    -- Orientierung beibehalten, nur Y knallig setzen
-    local groundCF = keepOrientationAtY(v, targetY)
+        fly.locking = true
 
-    fly.locking = true
+        -- Alle Teile fixieren
+        for _,p in ipairs(v:GetDescendants()) do
+            if p:IsA("BasePart") then p.Anchored = true end
+        end
 
-    -- Während SAFE_HOLD jede Heartbeat-Frame "auf den Boden prügeln"
-    local t = 0
-    while t < TUNE.SAFE_HOLD and fly.enabled do
-        hardPivot(v, groundCF)
-        t += RunService.Heartbeat:Wait() or 0
+        local t = 0
+        while t < TUNE.SAFE_HOLD and fly.enabled do
+            hardPivot(v, groundCF)
+            t += RunService.Heartbeat:Wait() or 0
+        end
+
+        -- Unlock + zurück
+        for _,p in ipairs(v:GetDescendants()) do
+            if p:IsA("BasePart") then p.Anchored = false end
+        end
+        if fly.enabled then
+            hardPivot(v, beforeCF)
+            fly.lastAirCF = beforeCF
+        end
+        fly.locking = false
     end
-
-    -- Danach zurück in die Luft-Position
-    if fly.enabled then
-        hardPivot(v, beforeCF)
-        fly.lastAirCF = beforeCF
-    end
-    fly.locking = false
-end
 
     -- === Enable/Disable ===
-    local function setEnabled(on)
+    function setEnabled(on)
         if on == fly.enabled then return end
         local v = myVehicle()
         if on then
@@ -204,11 +206,18 @@ end
         setEnabled(not fly.enabled)
     end
 
-    -- UI: nur Car Fly / Keybind / Safe Fly
+    -- === UI ===
     local sec = tab:AddSection({ Name = "Car Fly" })
     fly.uiToggle = sec:AddToggle({ Name = "Enable Car Fly", Default=false, Callback=function(v) setEnabled(v) end })
     sec:AddBind({ Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false, Callback=function() toggle() end })
     sec:AddToggle({ Name="Safe Fly", Default=true, Callback=function(v) fly.safeOn=v; fly.timer=0 end })
 
-    print("[carfly_tp v5.4.3] loaded")
+    -- globaler Auto-Off (Failsafe)
+    RunService.Heartbeat:Connect(function()
+        if fly.enabled and not SV.isSeated() then
+            setEnabled(false)
+        end
+    end)
+
+    print("[carfly_tp v5.4.4] loaded (SafeFly + Auto-Off when leaving seat)")
 end
