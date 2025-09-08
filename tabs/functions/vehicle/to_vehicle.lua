@@ -12,7 +12,7 @@ return function(SV, tab, OrionLib)
         local hrp = (SV.LP.Character or SV.LP.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
         local dist = (hrp.Position - seat.Position).Magnitude
         if dist > WARN_DISTANCE then
-            notify("Vehicle", ("Achtung: weit entfernt (~%d studs)."):format(math.floor(dist)), 3)
+            notify("Vehicle", ("Zu weit entfernt (~%d studs)."):format(math.floor(dist)), 3)
         end
 
         hrp.CFrame = seat.CFrame * TO_OFFSET
@@ -21,5 +21,5 @@ return function(SV, tab, OrionLib)
     end
 
     local sec = tab:AddSection({ Name = "To/Bring Vehicle" })
-    sec:AddButton({ Name = "To Vehicle (auf Sitz & einsteigen)", Callback = toVehicle })
+    sec:AddButton({ Name = "To Vehicle", Callback = toVehicle })
 end
