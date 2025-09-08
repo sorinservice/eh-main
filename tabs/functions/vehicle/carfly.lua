@@ -1,7 +1,7 @@
 -- tabs/functions/vehicle/vehicle/carfly_tp.lua
 return function(SV, tab, OrionLib)
 
-    -- Version: 5.4.5
+    -- Version: 5.4.6
     local RunService = game:GetService("RunService")
     local UserInput  = game:GetService("UserInputService")
     local Players    = game:GetService("Players")
@@ -14,15 +14,17 @@ return function(SV, tab, OrionLib)
         VERT_GAIN     = 1.00,
         Y_BIAS        = 0.00,
 
-        SAFE_PERIOD   = 6.0,
-        SAFE_HOLD     = 1.0,          -- 1 Sekunde
+        SAFE_PERIOD   = 5.5,
+        SAFE_HOLD     = 1.0,          -- Dauer des Locks (Sekunden)
         RAY_DEPTH     = 20000,
         PRESS_EXTRA   = 1.5,          -- wie stark nach unten pressen
     }
 
     local function myVehicle() return SV.myVehicleFolder() end
     local function ensurePP(v) SV.ensurePrimaryPart(v); return v.PrimaryPart end
-    local function setNetOwner(v) pcall(function() if v and v.PrimaryPart then v.PrimaryPart:SetNetworkOwner(LP) end end) end
+    local function setNetOwner(v)
+        pcall(function() if v and v.PrimaryPart then v.PrimaryPart:SetNetworkOwner(LP) end end)
+    end
 
     local function zeroVel(v)
         for _,p in ipairs(v:GetDescendants()) do
@@ -42,25 +44,24 @@ return function(SV, tab, OrionLib)
         return ignore
     end
 
-    local function groundYBelowXZ(x, z, ignoreList)
-        local originY = 1e5
-        local origin  = Vector3.new(x, originY, z)
+    -- Liefert kompletten Hit (Part oder Terrain)
+    local function getDownHit(x, z, ignoreList)
+        local origin  = Vector3.new(x, 1e5, z)
         local dir     = Vector3.new(0, -2e5, 0)
 
+        -- 1) alles außer Fahrzeug
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Blacklist
         params.FilterDescendantsInstances = ignoreList or {}
-
         local hit = workspace:Raycast(origin, dir, params)
-        if hit then return hit.Position.Y end
+        if hit then return hit end
 
+        -- 2) Fallback Terrain
         local p2 = RaycastParams.new()
         p2.FilterType = Enum.RaycastFilterType.Whitelist
         p2.FilterDescendantsInstances = {workspace.Terrain}
         local hit2 = workspace:Raycast(origin, dir, p2)
-        if hit2 then return hit2.Position.Y end
-
-        return 0
+        return hit2
     end
 
     local function getHalfHeight(v)
@@ -130,7 +131,7 @@ return function(SV, tab, OrionLib)
         fly.lastAirCF = final
     end
 
-    -- === Safe-Lock (ohne Anchorn, knallig pressen) ===
+    -- === Safe-Lock (pausiert auf Boden ODER Objekten) ===
     local function safeLockOnce()
         local v = myVehicle(); if not v then return end
         if not v.PrimaryPart then if not ensurePP(v) then return end end
@@ -139,16 +140,19 @@ return function(SV, tab, OrionLib)
         local ignore   = buildIgnoreList(v)
         local cur      = v:GetPivot()
 
-        local hitY     = groundYBelowXZ(cur.X, cur.Z, ignore)
+        local hit = getDownHit(cur.X, cur.Z, ignore)
+        if not hit then return end
+
         local halfY    = getHalfHeight(v)
-        local targetY  = hitY + halfY - TUNE.PRESS_EXTRA
+        local targetY  = hit.Position.Y + halfY - TUNE.PRESS_EXTRA
         local groundCF = keepOrientationAtY(v, targetY)
 
         fly.locking = true
-
         local t = 0
         while t < TUNE.SAFE_HOLD and fly.enabled do
-            hardPivot(v, groundCF)
+            local rehit = getDownHit(v:GetPivot().X, v:GetPivot().Z, ignore) or hit
+            local ty    = rehit.Position.Y + halfY - TUNE.PRESS_EXTRA
+            hardPivot(v, keepOrientationAtY(v, ty))
             t += RunService.Heartbeat:Wait() or 0
         end
 
@@ -202,12 +206,12 @@ return function(SV, tab, OrionLib)
     sec:AddBind({ Name="Toggle Key", Default=Enum.KeyCode.X, Hold=false, Callback=function() toggle() end })
     sec:AddToggle({ Name="Safe Fly", Default=true, Callback=function(v) fly.safeOn=v; fly.timer=0 end })
 
-    -- globaler Auto-Off (Failsafe)
+    -- Auto-Off wenn aus Sitz ausgestiegen
     RunService.Heartbeat:Connect(function()
         if fly.enabled and not SV.isSeated() then
             setEnabled(false)
         end
     end)
 
-    print("[carfly_tp v5.4.5] loaded")
+    print("[carfly_tp v5.4.6] loaded (SafeFly works on any object)")
 end
