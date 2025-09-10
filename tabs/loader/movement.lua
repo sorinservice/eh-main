@@ -47,7 +47,7 @@ return function(tab, OrionLib)
     ----------------------------------------------------------------
     -- UI mapping config
     local UI_MIN, UI_MAX     = 0.1, 1.0          -- what the user sees
-    local MUL_MIN, MUL_MAX   = 0.8, 6.0          -- internal effective multiplier range
+    local MUL_MIN, MUL_MAX   = 0.8, 8.0          -- internal effective multiplier range
 
     -- linear remap helper: x in [a1..a2] -> [b1..b2]
     local function remap(x, a1, a2, b1, b2)
