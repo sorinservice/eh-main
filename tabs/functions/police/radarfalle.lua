@@ -148,5 +148,5 @@ return function(SV, tab, OrionLib)
         Callback = function(v) setEnabled(v) end
     })
 
-    print("[police/radarfalle v1.5.1] loaded (range=1500)")
+    print("[police/radarfalle v1] loaded")
 end
