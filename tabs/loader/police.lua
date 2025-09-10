@@ -35,6 +35,7 @@ return function(tab, OrionLib)
     -- 2) Funktionen des Police-Tabs laden
     local modules = {
         "radarfalle.lua",
+        "anti-taser.lua"
     }
 
     for _,file in ipairs(modules) do
