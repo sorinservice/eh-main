@@ -1,11 +1,12 @@
 -- tabs/functions/police/radarfalle.lua
 return function(SV, tab, OrionLib)
-    -- radar v1.4.0 (first vec = vehicle pos, second vec = look dir, range=1500)
+    -- radar v1.5.1 (Orion: Toggle only; requires Radar Gun equipped; range 1500)
 
     local RunService = game:GetService("RunService")
     local Players    = game:GetService("Players")
     local LP         = Players.LocalPlayer
 
+    -- Remote (your game: Bnl/<uuid>)
     local REMOTE = (function()
         local bnl = game:GetService("ReplicatedStorage"):WaitForChild("Bnl")
         return bnl:WaitForChild("bbb7c252-304d-4582-b2a0-89eb9d3a0855")
@@ -19,16 +20,19 @@ return function(SV, tab, OrionLib)
         TICK          = 0.08,
         PER_TARGET_CD = 0.30,
         GLOBAL_CD     = 0.03,
-        MAX_PER_TICK  = 6,
-        TOOL_MATCH    = {["Radar"]=true,["RadarGun"]=true,["Radar Gun"]=true},
+        MAX_PER_TICK  = 8,
+        TOOL_NAMES    = {["Radar Gun"]=true, ["Radar"]=true, ["RadarGun"]=true},
     }
 
     local lastGlobal = 0
-    local perTarget  = {}
+    local perTarget  = {} -- [Model] = nextAllowedTime
 
     local function now() return os.clock() end
 
-    local function vehiclesFolder() return workspace:FindFirstChild("Vehicles") end
+    local function vehiclesFolder()
+        return workspace:FindFirstChild("Vehicles")
+    end
+
     local function ensurePP(m)
         if not m then return nil end
         if m.PrimaryPart then return m.PrimaryPart end
@@ -37,19 +41,18 @@ return function(SV, tab, OrionLib)
         return nil
     end
 
-    local function camLook()
-        local c = workspace.CurrentCamera
-        local v = c and c.CFrame.LookVector or Vector3.new(0,0,1)
-        -- horizontal nahezu wie in den Logs (sehr kleines Y ist ok)
-        if math.abs(v.Y) < 1e-6 then v = Vector3.new(v.X, -0.0005, v.Z) end
-        return v.Unit
+    local function hrp()
+        local ch = LP.Character or LP.CharacterAdded:Wait()
+        return ch and ch:FindFirstChild("HumanoidRootPart")
     end
 
-    local function toolEquipped()
+    local function radarEquipped()
         local ch = LP.Character
         if not ch then return false end
-        for _,t in ipairs(ch:GetChildren()) do
-            if t:IsA("Tool") and cfg.TOOL_MATCH[t.Name] then return true end
+        for _,inst in ipairs(ch:GetChildren()) do
+            if inst:IsA("Tool") and cfg.TOOL_NAMES[inst.Name] then
+                return true
+            end
         end
         return false
     end
@@ -63,17 +66,23 @@ return function(SV, tab, OrionLib)
         return true
     end
 
-    -- WICHTIG: erster Vektor = Fahrzeug-Position (Hit-Punkt), zweiter = Blickrichtung
-    local function fireAt(v)
-        local pp = v.PrimaryPart or ensurePP(v); if not pp then return end
-        local first  = pp.Position                 -- wie in funktionierenden Dumps
-        local second = camLook()                   -- horizontaler Blickvektor
+    -- First vector = seat.Position (target), second vector = direction from player
+    local function fireAt(v, originPos)
+        local seat = v:FindFirstChild("DriveSeat")
+        local pp   = v.PrimaryPart or ensurePP(v)
+        if not seat or not pp then return end
 
-        local toolArg = Instance.new("Tool", nil)  -- exakt wie Spy
+        local first  = seat.Position
+        local dirVec = (first - originPos)
+        local mag    = dirVec.Magnitude
+        if mag < 1e-6 then return end
+        dirVec = dirVec / mag
+
+        local toolArg = Instance.new("Tool", nil) -- dummy tool (like spy output)
         REMOTE:FireServer(
             toolArg,
             vector.create(first.X,  first.Y,  first.Z),
-            vector.create(second.X, second.Y, second.Z)
+            vector.create(dirVec.X, dirVec.Y, dirVec.Z)
         )
 
         perTarget[v] = now() + cfg.PER_TARGET_CD
@@ -84,56 +93,60 @@ return function(SV, tab, OrionLib)
     local function setEnabled(on)
         if loopConn then loopConn:Disconnect(); loopConn=nil end
         if not on then
-            cfg.enabled = false; table.clear(perTarget)
+            cfg.enabled = false
+            table.clear(perTarget)
             if OrionLib and OrionLib.MakeNotification then
-                OrionLib:MakeNotification({Name="Radar", Content="Aus", Time=1})
+                OrionLib:MakeNotification({Name="Radar", Content="Auto-Radar disabled", Time=1})
             end
             return
         end
         cfg.enabled = true
         local acc = 0
         loopConn = RunService.Heartbeat:Connect(function(dt)
-            acc += dt; if acc < cfg.TICK then return end; acc = 0
-            if not toolEquipped() then return end
+            acc += dt
+            if acc < cfg.TICK then return end
+            acc = 0
+
+            if not radarEquipped() then return end
 
             local vf = vehiclesFolder(); if not vf then return end
-            local originForRange = (Players.LocalPlayer.Character
-                and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart"))
-                and Players.LocalPlayer.Character.HumanoidRootPart.Position
-                or Vector3.new(0,0,0)
+            local root = hrp(); if not root then return end
+            local origin = root.Position
 
-            -- sortiere nach Distanz zum Spieler (nur für Range/Lastverteilung)
-            local list = {}
+            local candidates = {}
             for _,v in ipairs(vf:GetChildren()) do
-                local pp = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
-                if pp then
-                    local d = (pp.Position - originForRange).Magnitude
-                    if d <= cfg.MAX_DIST then table.insert(list, {v=v, d=d}) end
+                local seat = v:FindFirstChild("DriveSeat")
+                local pp   = v.PrimaryPart or v:FindFirstChildWhichIsA("BasePart", true)
+                if seat and pp then
+                    local d = (seat.Position - origin).Magnitude
+                    if d <= cfg.MAX_DIST then
+                        table.insert(candidates, {v=v, d=d})
+                    end
                 end
             end
-            table.sort(list, function(a,b) return a.d < b.d end)
+            table.sort(candidates, function(a,b) return a.d < b.d end)
 
             local fired = 0
-            for _,it in ipairs(list) do
+            for _,it in ipairs(candidates) do
                 if fired >= cfg.MAX_PER_TICK then break end
-                if canFire(it.v, originForRange) then
-                    fireAt(it.v)
+                if canFire(it.v, origin) then
+                    fireAt(it.v, origin)
                     fired += 1
                 end
             end
         end)
         if OrionLib and OrionLib.MakeNotification then
-            OrionLib:MakeNotification({Name="Radar", Content="An", Time=1})
+            OrionLib:MakeNotification({Name="Radar", Content="Auto-Radar enabled (equip Radar Gun)", Time=1})
         end
     end
 
-    -- UI: nur Toggle (kein Keybind)
-    local sec = tab:AddSection({ Name = "Radarfalle" })
+    -- UI: only toggle
+    local sec = tab:AddSection({ Name = "Radar Trap" })
     sec:AddToggle({
-        Name = "Auto-Radar (Tool ausrüsten)",
+        Name = "Enable Auto-Radar (requires Radar Gun)",
         Default = false,
         Callback = function(v) setEnabled(v) end
     })
 
-    print("[police/radarfalle v1.4.0] loaded (vec1=vehicle pos, vec2=look dir, 1500 range)")
+    print("[police/radarfalle v1.5.1] loaded (range=1500)")
 end
